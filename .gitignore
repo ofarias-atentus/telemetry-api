@@ -1,0 +1,5 @@
+# Binarios compilados
+atdevice-api
+telemetry-api
+*.exe
+*.out

@@ -15,7 +15,7 @@ It uses stdlib `net/http` with no router. The only direct dependency is `github.
 
 `main.go` must stay at the repo root as `package main` and compile on its own, because the build is `go build -o atdevice-api main.go`. Put new code in `internal/` packages, not in sibling files at the root, or that build breaks. The `DB` interface is the test seam: handler tests inject a fake instead of a real pool.
 
-Schema is in `database.sql`: `devices` (PK `device_id`) and `device_telemetry` (FK to `devices`, turned into a hypertable on `time`).
+Schema is in `database.sql`: `devices` (PK `device_id`) and `device_telemetry` (columns `time`, `device_id`, and `data JSONB` for metrics; FK to `devices`, turned into a hypertable on `time`).
 
 Go style and practice guides are in `.claude/skills/golang-*` (from samber/cc-skills-golang) and apply to `.go` files.
 
@@ -30,7 +30,8 @@ The startup error strings in `run()` (`main.go`) are capitalized Spanish on purp
 - `config.json` is read from the current working directory, so run the binary from the repo root. It is tracked in git and holds real database credentials, so do not echo them in output or copy them elsewhere. Its `database.host` is `0.0.0.0`.
 - Startup builds a pgx pool from `config.json`, pings the database, and exits if the ping fails. It then listens on `:<server.port>` (all interfaces, default 8080). There is no auth and no TLS.
 - `POST /api/v1/devices` takes a JSON array of `DeviceInventory`. Each row is a separate upsert (`ON CONFLICT (device_id) DO UPDATE`) with no transaction. Row errors are only logged; the handler still returns `200 {"status":"success"}`. The upsert does not update `platform`, `model`, or `battery_design_cap`.
-- `POST /api/v1/telemetry` takes a JSON array of `TelemetryData`, written with one `CopyFrom` call, so the batch is all-or-nothing. An unknown `device_id` violates the FK and fails the whole batch with 500. An empty array returns 200 with no body. Success returns 201 `{"status":"created","records":N}`. A zero `time` is replaced with `time.Now()`.
+- `POST /api/v1/telemetry` takes a JSON array of `TelemetryData`, written with one `CopyFrom` call into `device_telemetry` (columns `time`, `device_id`, `data`), so the batch is all-or-nothing. Each row's `data` comes from `TelemetryData.payload()` in `internal/api/models.go`. An unknown `device_id` violates the FK and fails the whole batch with 500. An empty array returns 200 with no body. Success returns 201 `{"status":"created","records":N}`. A zero `time` is replaced with `time.Now()`.
+- Two input formats, which can be mixed in one batch. Legacy: metric fields at the top level, no `data` (or `"data": null`); all 8 legacy keys are stored in `data`, unsent ones as 0/false. New: `data` is an object with any keys, nested values allowed. Legacy fields that were sent are merged in only when their key is absent from `data`, so `data` wins. A `data` that is not an object gets 400 with the decoder's message. Numbers are no longer range-checked by `NUMERIC` columns.
 - Non-POST requests get 405. Malformed JSON gets 400, including a single object sent instead of an array.
 - The JSON field `host_name` is stored in the `host_pc` column.
 - `README.md` documents the endpoints; keep it in sync when handler behavior changes.
@@ -39,6 +40,8 @@ The startup error strings in `run()` (`main.go`) are capitalized Spanish on purp
 
 - Requires PostgreSQL 14+ with TimescaleDB. The app uses no TimescaleDB functions, so on plain PostgreSQL the `CREATE EXTENSION` and `create_hypertable` statements in `database.sql` can be skipped. This is how it has been run locally (PostgreSQL 16 without TimescaleDB).
 - The upsert SQL (`upsertDeviceQuery` in `internal/api/devices.go`) is pinned by `TestUpsertDeviceQueryText`. Changing its columns, conflict clause, or SET list fails that test, so update both together.
+- `migrations/` holds schema changes for existing databases. `001_device_telemetry_jsonb.sql` moves the 8 old metric columns into `data` in one transaction, sets `lock_timeout` to 5s, and is not idempotent (a second run fails and rolls back). There is no reverse migration; back up with `pg_dump -t device_telemetry` first. Every schema change goes in a new file there and in `database.sql`, which must keep describing the fresh-install shape.
+- Deploy ordering: stop the API and deploy the new binary together with the migration. The old binary inserts into the dropped columns and the new binary needs `data`, so neither works against the other schema. Check TimescaleDB compression and continuous aggregates before running it.
 
 ## Commands
 
@@ -47,6 +50,7 @@ go mod download
 go build -o atdevice-api main.go   # or: go run main.go
 ./atdevice-api                     # from the repo root
 psql -U <user> -h <host> -d attelemetry -f database.sql
+psql -U <user> -h <host> -d attelemetry -f migrations/001_device_telemetry_jsonb.sql   # existing DBs with the old columns only
 go vet ./...
 gofmt -l .
 go test ./...

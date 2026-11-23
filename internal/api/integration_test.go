@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,12 +92,23 @@ func TestIntegrationIngest(t *testing.T) {
 			wantBody: `{"status":"success"}`,
 		},
 		{
-			name: "telemetry insert",
+			name: "telemetry insert legacy",
 			path: "/api/v1/telemetry",
 			body: fmt.Sprintf(
 				`[{"time":"2024-05-01T10:00:00Z","device_id":%q,"battery_pct":80.5,"battery_health_pct":95,`+
 					`"temp_celsius":30.2,"voltage_v":4.1,"cycle_count":120,"is_charging":true,`+
 					`"cpu_usage":12.5,"ram_usage":40.5}]`,
+				deviceID,
+			),
+			wantCode: http.StatusCreated,
+			wantBody: `{"status":"created", "records": 1}`,
+		},
+		{
+			name: "telemetry insert data",
+			path: "/api/v1/telemetry",
+			body: fmt.Sprintf(
+				`[{"time":"2024-05-02T10:00:00Z","device_id":%q,`+
+					`"data":{"battery_pct":70,"storage_free_gb":12.5}}]`,
 				deviceID,
 			),
 			wantCode: http.StatusCreated,
@@ -153,7 +165,46 @@ func TestIntegrationIngest(t *testing.T) {
 	).Scan(&telemetry); err != nil {
 		t.Fatalf("count telemetry: %v", err)
 	}
-	if telemetry != 1 {
-		t.Errorf("telemetry rows = %d, want 1", telemetry)
+	if telemetry != 2 {
+		t.Errorf("telemetry rows = %d, want 2", telemetry)
+	}
+
+	dataByTime := []struct {
+		name string
+		time string
+		want map[string]any
+	}{
+		{
+			name: "legacy record",
+			time: "2024-05-01T10:00:00Z",
+			want: map[string]any{
+				"battery_pct":        80.5,
+				"battery_health_pct": 95.0,
+				"temp_celsius":       30.2,
+				"voltage_v":          4.1,
+				"cycle_count":        120.0,
+				"is_charging":        true,
+				"cpu_usage":          12.5,
+				"ram_usage":          40.5,
+			},
+		},
+		{
+			name: "data record",
+			time: "2024-05-02T10:00:00Z",
+			want: map[string]any{"battery_pct": 70.0, "storage_free_gb": 12.5},
+		},
+	}
+	for _, c := range dataByTime {
+		var data map[string]any
+		if err := pool.QueryRow(
+			ctx,
+			"SELECT data FROM device_telemetry WHERE device_id = $1 AND time = $2::timestamptz",
+			deviceID, c.time,
+		).Scan(&data); err != nil {
+			t.Fatalf("%s: query data: %v", c.name, err)
+		}
+		if !reflect.DeepEqual(data, c.want) {
+			t.Errorf("%s: data = %#v, want %#v", c.name, data, c.want)
+		}
 	}
 }

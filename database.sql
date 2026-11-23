@@ -17,18 +17,11 @@ CREATE TABLE IF NOT EXISTS devices (
     updated_at           TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Tabla de Telemetría (Series Temporales de Hardware)
+-- 3. Tabla de Telemetría (Series Temporales; las métricas van en el JSONB data)
 CREATE TABLE IF NOT EXISTS device_telemetry (
     time                 TIMESTAMPTZ NOT NULL,
     device_id            VARCHAR(64) REFERENCES devices(device_id),
-    battery_pct          NUMERIC(5,2),
-    battery_health_pct   NUMERIC(5,2),
-    temp_celsius         NUMERIC(5,2),
-    voltage_v            NUMERIC(5,3),
-    cycle_count          INT,
-    is_charging          BOOLEAN,
-    cpu_usage            NUMERIC(5,2),
-    ram_usage            NUMERIC(5,2)
+    data                 JSONB NOT NULL DEFAULT '{}'::jsonb  -- Métricas, ej: {"battery_pct": 80, "cpu_usage": 12.5}
 );
 
 -- 4. Convertir la tabla de telemetría en Hypertable particionada por tiempo

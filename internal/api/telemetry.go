@@ -35,32 +35,14 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		[]string{
 			"time",
 			"device_id",
-			"battery_pct",
-			"battery_health_pct",
-			"temp_celsius",
-			"voltage_v",
-			"cycle_count",
-			"is_charging",
-			"cpu_usage",
-			"ram_usage",
+			"data",
 		},
 		pgx.CopyFromSlice(len(batch), func(i int) ([]any, error) {
 			m := batch[i]
 			if m.Time.IsZero() {
 				m.Time = time.Now()
 			}
-			return []any{
-				m.Time,
-				m.DeviceID,
-				m.BatteryPct,
-				m.BatteryHealthPct,
-				m.TempCelsius,
-				m.VoltageV,
-				m.CycleCount,
-				m.IsCharging,
-				m.CPUUsage,
-				m.RAMUsage,
-			}, nil
+			return []any{m.Time, m.DeviceID, m.payload()}, nil
 		}),
 	)
 	if err != nil {

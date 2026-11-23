@@ -33,7 +33,8 @@ telemetry-api/
 │   │   ├── server.go            # Interfaz DB, Server, NewServer y Routes
 │   │   ├── devices.go           # Handler de /api/v1/devices y consulta de upsert
 │   │   ├── telemetry.go         # Handler de /api/v1/telemetry
-│   │   ├── models.go            # Structs DeviceInventory y TelemetryData
+│   │   ├── models.go            # Structs DeviceInventory y TelemetryData, y payload() para la columna data
+│   │   ├── models_test.go       # Pruebas de payload() y de su JSON
 │   │   ├── fake_db_test.go      # Base de datos falsa para pruebas unitarias
 │   │   ├── devices_test.go      # Pruebas unitarias de /api/v1/devices
 │   │   ├── telemetry_test.go    # Pruebas unitarias de /api/v1/telemetry
@@ -42,6 +43,8 @@ telemetry-api/
 │   └── config/                  # Carga y decodificación de config.json
 │       ├── config.go
 │       └── config_test.go
+├── migrations/
+│   └── 001_device_telemetry_jsonb.sql  # Mueve las métricas antiguas a la columna data
 └── README.md        # Documentación del proyecto
 ```
 
@@ -73,17 +76,27 @@ psql -U <usuario> -h <host> -d attelemetry -f database.sql
    - `status` (`VARCHAR(20)`): Estado operativo (`active`, `maintenance`, `retired`).
    - `updated_at` (`TIMESTAMPTZ`): Fecha y hora de la última actualización.
 
-2. **Hypertable `device_telemetry`**: Almacena las métricas de hardware en series temporales.
+2. **Hypertable `device_telemetry`**: Almacena las mediciones en series temporales.
    - `time` (`TIMESTAMPTZ`, NOT NULL): Marca de tiempo de la muestra.
    - `device_id` (`VARCHAR(64)`, FK -> `devices.device_id`): Dispositivo asociado.
-   - `battery_pct` (`NUMERIC(5,2)`): Porcentaje de carga actual.
-   - `battery_health_pct` (`NUMERIC(5,2)`): Salud de la batería (%).
-   - `temp_celsius` (`NUMERIC(5,2)`): Temperatura en grados Celsius.
-   - `voltage_v` (`NUMERIC(5,3)`): Voltaje en voltios (V).
-   - `cycle_count` (`INT`): Cantidad de ciclos de carga.
-   - `is_charging` (`BOOLEAN`): Indica si el dispositivo está cargando.
-   - `cpu_usage` (`NUMERIC(5,2)`): Uso de CPU (%).
-   - `ram_usage` (`NUMERIC(5,2)`): Uso de memoria RAM (%).
+   - `data` (`JSONB`, NOT NULL, por defecto `{}`): Métricas como objeto JSON libre, por ejemplo `battery_pct`, `temp_celsius` o `cpu_usage`. El esquema no limita sus claves.
+
+#### Migraciones
+
+Si la base de datos ya tiene `device_telemetry` con las columnas antiguas (`battery_pct`, `battery_health_pct`, `temp_celsius`, `voltage_v`, `cycle_count`, `is_charging`, `cpu_usage` y `ram_usage`), aplica `migrations/001_device_telemetry_jsonb.sql`. Mueve las métricas a la columna `data` y elimina las columnas antiguas. Todo se ejecuta en una sola transacción:
+
+```bash
+psql -U <usuario> -h <host> -d attelemetry -f migrations/001_device_telemetry_jsonb.sql
+```
+
+> **Advertencias**
+> - Haz un respaldo antes de aplicar la migración, por ejemplo con `pg_dump -U <usuario> -h <host> -t device_telemetry attelemetry > device_telemetry_backup.sql`. No hay migración inversa.
+> - Detén la API y despliega el binario nuevo junto con la migración. El esquema antiguo y el nuevo no son compatibles: cada binario falla con el otro.
+> - La migración reescribe todas las filas; en una hypertable grande puede tardar y usa más disco y WAL. Si la compresión de TimescaleDB está activa, descomprime antes los chunks comprimidos. Los continuous aggregates o políticas que usen las columnas antiguas bloquean el `DROP COLUMN`, así que revísalos antes.
+> - La migración fija `lock_timeout` en 5 segundos: si no obtiene los bloqueos a tiempo, falla en lugar de esperar.
+> - Ejecutarla por segunda vez falla y hace rollback, sin cambios.
+> - Las métricas con valor `NULL` no se copian a `data`.
+> - Las instalaciones nuevas no necesitan la migración: `database.sql` ya crea la tabla en el formato nuevo.
 
 ---
 
@@ -230,7 +243,7 @@ curl -X POST http://localhost:8080/api/v1/devices \
 
 ### 2. Ingestar Lote de Telemetría
 
-Realiza una inserción masiva en la tabla `device_telemetry`. Si el campo `time` se omite o es el valor cero, el servidor asigna automáticamente la hora actual (`time.Now()`).
+Realiza una inserción masiva en la tabla `device_telemetry`. Si el campo `time` se omite o es el valor cero, el servidor asigna automáticamente la hora actual (`time.Now()`). Las métricas se guardan en la columna `data` (JSONB).
 
 > **Importante**: Cada `device_id` incluido en el lote debe existir previamente en la tabla `devices` debido a la restricción de llave foránea (`FOREIGN KEY`).
 
@@ -238,7 +251,35 @@ Realiza una inserción masiva en la tabla `device_telemetry`. Si el campo `time`
 - **Método**: `POST`
 - **Content-Type**: `application/json`
 
-#### Cuerpo de la Petición (JSON Array)
+El endpoint acepta dos formatos, que pueden mezclarse en el mismo lote.
+
+#### Formato nuevo (recomendado)
+
+Cada elemento tiene `device_id`, `time` (opcional) y `data`, un objeto con las claves que se necesiten. Se admiten valores anidados.
+
+```json
+[
+  {
+    "time": "2026-11-06T14:30:00Z",
+    "device_id": "00008101-00123456789ABCDE",
+    "data": {
+      "battery_pct": 85.5,
+      "battery_health_pct": 92.0,
+      "temp_celsius": 31.4,
+      "voltage_v": 4.125,
+      "cycle_count": 340,
+      "is_charging": true,
+      "cpu_usage": 24.5,
+      "ram_usage": 61.2,
+      "sensor": {"gps": {"lat": -33.45, "lon": -70.66}}
+    }
+  }
+]
+```
+
+#### Formato legado
+
+Las métricas van en el nivel superior del elemento y no se envía `data` (o se envía `"data": null`). Se guardan las 8 claves (`battery_pct`, `battery_health_pct`, `temp_celsius`, `voltage_v`, `cycle_count`, `is_charging`, `cpu_usage`, `ram_usage`) dentro de `data`. Las que no se envían quedan en `0` (o `false` en `is_charging`), igual que con las columnas antiguas.
 
 ```json
 [
@@ -257,6 +298,13 @@ Realiza una inserción masiva en la tabla `device_telemetry`. Si el campo `time`
 ]
 ```
 
+#### Reglas de combinación
+
+- Si `data` es un objeto (también `{}`), se guarda tal cual. Los campos legados enviados en el mismo elemento se agregan solo si su clave no existe en `data`, así que `data` gana en caso de conflicto.
+- En el formato nuevo no se agregan con cero las métricas que no se envían.
+- Si `data` no es un objeto (por ejemplo, un número o un arreglo), la petición se rechaza con `400`.
+- Los valores numéricos ya no se validan contra la precisión de las columnas `NUMERIC(5,2)`: JSONB acepta cualquier número.
+
 #### Respuestas
 
 - **`201 Created`**:
@@ -264,7 +312,7 @@ Realiza una inserción masiva en la tabla `device_telemetry`. Si el campo `time`
   {"status":"created", "records": 1}
   ```
 - **`200 OK`**: Si se envía un arreglo vacío `[]`.
-- **`400 Bad Request`**: JSON mal formado.
+- **`400 Bad Request`**: JSON mal formado o `data` que no es un objeto.
 - **`405 Method Not Allowed`**: Método HTTP distinto de `POST`.
 - **`500 Internal Server Error`**: Error en la inserción masiva (por ejemplo, violación de llave foránea o pérdida de conexión con la base de datos).
 
@@ -277,14 +325,16 @@ curl -X POST http://localhost:8080/api/v1/telemetry \
     {
       "time": "2026-11-06T14:30:00Z",
       "device_id": "00008101-00123456789ABCDE",
-      "battery_pct": 85.5,
-      "battery_health_pct": 92.0,
-      "temp_celsius": 31.4,
-      "voltage_v": 4.125,
-      "cycle_count": 340,
-      "is_charging": true,
-      "cpu_usage": 24.5,
-      "ram_usage": 61.2
+      "data": {
+        "battery_pct": 85.5,
+        "battery_health_pct": 92.0,
+        "temp_celsius": 31.4,
+        "voltage_v": 4.125,
+        "cycle_count": 340,
+        "is_charging": true,
+        "cpu_usage": 24.5,
+        "ram_usage": 61.2
+      }
     }
   ]'
 ```

@@ -27,7 +27,21 @@ telemetry-api/
 ├── database.sql     # Script DDL para inicializar tablas, hypertable e índices
 ├── go.mod           # Definición del módulo y dependencias Go
 ├── go.sum           # Checksums de dependencias
-├── main.go          # Código fuente del servidor y handlers HTTP
+├── main.go          # Punto de entrada: carga la configuración, conecta a PostgreSQL y arranca el servidor
+├── internal/
+│   ├── api/                     # Servidor HTTP: handlers, modelos y pruebas
+│   │   ├── server.go            # Interfaz DB, Server, NewServer y Routes
+│   │   ├── devices.go           # Handler de /api/v1/devices y consulta de upsert
+│   │   ├── telemetry.go         # Handler de /api/v1/telemetry
+│   │   ├── models.go            # Structs DeviceInventory y TelemetryData
+│   │   ├── fake_db_test.go      # Base de datos falsa para pruebas unitarias
+│   │   ├── devices_test.go      # Pruebas unitarias de /api/v1/devices
+│   │   ├── telemetry_test.go    # Pruebas unitarias de /api/v1/telemetry
+│   │   ├── server_test.go       # Pruebas de enrutamiento
+│   │   └── integration_test.go  # Prueba de integración (tag integration)
+│   └── config/                  # Carga y decodificación de config.json
+│       ├── config.go
+│       └── config_test.go
 └── README.md        # Documentación del proyecto
 ```
 
@@ -124,6 +138,29 @@ Edita el archivo `config.json` en la raíz del proyecto con los parámetros del 
 Al iniciar correctamente, verás en consola:
 ```text
 API Ingestora central escuchando en el puerto :8080...
+```
+
+---
+
+## Pruebas
+
+### Pruebas unitarias
+
+No requieren base de datos. Usan `httptest` y una base de datos falsa:
+
+```bash
+go test ./...
+go test -race ./...
+go test -run TestHandleDevices ./internal/api/
+```
+
+### Prueba de integración
+
+Requiere PostgreSQL con `database.sql` ya aplicado y la variable `TEST_DATABASE_URL` con una URL `postgres://`. Si la variable no está definida, la prueba se omite. La prueba crea y elimina sus propias filas `itest-*`.
+
+```bash
+TEST_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/attelemetry?sslmode=disable' \
+  go test -tags integration -run Integration ./internal/api/
 ```
 
 ---

@@ -6,13 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Central ingestion API in Go (module `telemetry-api`) that stores device inventory and hardware telemetry (battery, temperature, voltage, CPU, RAM) from iOS and Android devices in PostgreSQL with TimescaleDB. The README calls the built binary `atdevice-api`.
 
-All code is in `main.go` (`package main`): config loading, pgx pool setup, and both HTTP handlers. It uses stdlib `net/http` with no router. The only direct dependency is `github.com/jackc/pgx/v5` (`pgxpool`, `CopyFrom`).
+`main.go` (repo root, `package main`) is a thin entry point: `run()` loads `config.json`, creates the pgx pool, pings it, and serves `api.NewServer(pool).Routes()` with `http.ListenAndServe`. The rest is in `internal/`:
+
+- `internal/config`: `Config` types, `Load(path)`, and `DatabaseConfig.BuildConnString()`.
+- `internal/api`: the `DB` interface (`Exec` and `CopyFrom`, which `*pgxpool.Pool` satisfies), `Server`/`NewServer`, and `Routes()`, which returns a dedicated `ServeMux`. Handlers are in `devices.go` and `telemetry.go`, models in `models.go`.
+
+It uses stdlib `net/http` with no router. The only direct dependency is `github.com/jackc/pgx/v5` (`pgxpool`, `CopyFrom`).
+
+`main.go` must stay at the repo root as `package main` and compile on its own, because the build is `go build -o atdevice-api main.go`. Put new code in `internal/` packages, not in sibling files at the root, or that build breaks. The `DB` interface is the test seam: handler tests inject a fake instead of a real pool.
 
 Schema is in `database.sql`: `devices` (PK `device_id`) and `device_telemetry` (FK to `devices`, turned into a hypertable on `time`).
+
+Go style and practice guides are in `.claude/skills/golang-*` (from samber/cc-skills-golang) and apply to `.go` files.
 
 ## Language
 
 The README, log lines, and error messages are in Spanish. Keep new messages and docs consistent with that. This file is in English.
+
+The startup error strings in `run()` (`main.go`) are capitalized Spanish on purpose. They are user-facing log output kept byte-identical, so linters' error-string rules (lowercase, no capital) do not apply. Do not lowercase them.
 
 ## Runtime behavior
 
@@ -27,6 +38,7 @@ The README, log lines, and error messages are in Spanish. Keep new messages and 
 ## Database
 
 - Requires PostgreSQL 14+ with TimescaleDB. The app uses no TimescaleDB functions, so on plain PostgreSQL the `CREATE EXTENSION` and `create_hypertable` statements in `database.sql` can be skipped. This is how it has been run locally (PostgreSQL 16 without TimescaleDB).
+- The upsert SQL (`upsertDeviceQuery` in `internal/api/devices.go`) is pinned by `TestUpsertDeviceQueryText`. Changing its columns, conflict clause, or SET list fails that test, so update both together.
 
 ## Commands
 
@@ -37,9 +49,16 @@ go build -o atdevice-api main.go   # or: go run main.go
 psql -U <user> -h <host> -d attelemetry -f database.sql
 go vet ./...
 gofmt -l .
+go test ./...
+go test -race ./...
+go test -run TestHandleDevices ./internal/api/   # single test
+TEST_DATABASE_URL='postgres://user:pass@host:5432/attelemetry?sslmode=disable' \
+  go test -tags integration -run Integration ./internal/api/
 ```
 
-There are no tests (no `*_test.go`), and no Makefile, linter config, or Dockerfile. When tests are added, use `go test ./...` or `go test -run <Name> ./...`.
+Unit tests use stdlib `testing` and `httptest` with a fake DB (`internal/api/fake_db_test.go`) and need no database. The integration test (`internal/api/integration_test.go`, build tag `integration`) skips when `TEST_DATABASE_URL` is unset, assumes `database.sql` is already applied, and creates and deletes its own `itest-*` rows.
+
+There is no Makefile, linter config, or Dockerfile.
 
 Quick check against a running server:
 

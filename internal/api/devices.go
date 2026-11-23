@@ -9,18 +9,26 @@ import (
 )
 
 const upsertDeviceQuery = `
+		WITH host AS (
+			INSERT INTO hosts (host_pc, host_ip, host_location, updated_at)
+			VALUES ($3, $4, $5, NOW())
+			ON CONFLICT (host_pc) DO UPDATE SET
+				host_ip = EXCLUDED.host_ip,
+				-- La ubicación es del host: un dispositivo que no la envía no debe borrarla.
+				host_location = COALESCE(EXCLUDED.host_location, hosts.host_location),
+				updated_at = NOW()
+		)
 		INSERT INTO devices (
-			device_id, alias_name, platform, model, os_version,
-			host_pc, host_ip, host_location, country, battery_design_cap, status, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+			device_id, platform, host_pc, country, status, attributes, updated_at
+		) VALUES ($1, $2, $3, $6, $7, $8, NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
-			alias_name = EXCLUDED.alias_name,
-			os_version = EXCLUDED.os_version,
 			host_pc = EXCLUDED.host_pc,
-			host_ip = EXCLUDED.host_ip,
-			host_location = EXCLUDED.host_location,
 			country = EXCLUDED.country,
 			status = EXCLUDED.status,
+			attributes = devices.attributes || EXCLUDED.attributes
+				|| jsonb_strip_nulls(jsonb_build_object(
+					'model', devices.attributes->'model',
+					'battery_design_cap', devices.attributes->'battery_design_cap')),
 			updated_at = NOW();
 	`
 
@@ -43,16 +51,13 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			ctx,
 			upsertDeviceQuery,
 			d.DeviceID,
-			d.AliasName,
 			d.Platform,
-			d.Model,
-			d.OSVersion,
 			d.HostName,
 			d.HostIP,
-			d.HostLocation,
+			d.hostLocation(),
 			d.Country,
-			d.BatteryDesignCap,
 			d.Status,
+			d.attributes(),
 		)
 		if err != nil {
 			log.Printf("[ERROR] Upsert falló para dispositivo %s: %v", d.DeviceID, err)

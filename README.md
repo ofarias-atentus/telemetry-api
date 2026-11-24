@@ -39,13 +39,15 @@ telemetry-api/
 │   │   ├── devices_test.go      # Pruebas unitarias de /api/v1/devices
 │   │   ├── telemetry_test.go    # Pruebas unitarias de /api/v1/telemetry
 │   │   ├── server_test.go       # Pruebas de enrutamiento
+│   │   ├── schema_test.go       # Pruebas del seed de countries y de database.sql / migraciones
 │   │   └── integration_test.go  # Prueba de integración (tag integration)
 │   └── config/                  # Carga y decodificación de config.json
 │       ├── config.go
 │       └── config_test.go
 ├── migrations/
 │   ├── 001_device_telemetry_jsonb.sql  # Mueve las métricas antiguas a la columna data
-│   └── 002_devices_attributes_jsonb.sql  # Crea hosts y mueve los campos de devices a attributes
+│   ├── 002_devices_attributes_jsonb.sql  # Crea hosts y mueve los campos de devices a attributes
+│   └── 003_countries.sql  # Crea countries y convierte devices.country a código ISO
 └── README.md        # Documentación del proyecto
 ```
 
@@ -55,7 +57,7 @@ telemetry-api/
 
 ### 1. Preparar la Base de Datos
 
-Crea la base de datos en PostgreSQL (por ejemplo, `attelemetry`) y ejecuta el script `database.sql` para habilitar `timescaledb` y crear las tablas `hosts`, `devices` y `device_telemetry`:
+Crea la base de datos en PostgreSQL (por ejemplo, `attelemetry`) y ejecuta el script `database.sql` para habilitar `timescaledb` y crear las tablas `countries`, `hosts`, `devices` y `device_telemetry`:
 
 ```bash
 psql -U <usuario> -h <host> -d attelemetry -f database.sql
@@ -63,22 +65,28 @@ psql -U <usuario> -h <host> -d attelemetry -f database.sql
 
 #### Modelo de Datos
 
-1. **Tabla `hosts`**: Un registro por PC de monitoreo, compartido por todos sus dispositivos.
+1. **Tabla `countries`**: Catálogo de países ISO 3166-1 alfa-2 (249 códigos). `devices.country` referencia su código.
+   - `code` (`CHAR(2)`, PK): Código ISO en mayúsculas (ej. `CL`).
+   - `name` (`VARCHAR(60)`, NOT NULL, UNIQUE): Nombre en español (ej. `Chile`, `Perú`).
+   - `aliases` (`TEXT[]`): Otras grafías en minúsculas, como nombres en inglés o formas sin tildes (ej. `peru`, `usa`).
+   - El `INSERT` de esta tabla está duplicado en `database.sql` y en `migrations/003_countries.sql`; un test verifica que ambos bloques sean idénticos.
+
+2. **Tabla `hosts`**: Un registro por PC de monitoreo, compartido por todos sus dispositivos.
    - `host_pc` (`VARCHAR(100)`, PK): Nombre del equipo host.
    - `host_ip` (`VARCHAR(15)`, NOT NULL): Dirección IP del host.
    - `host_location` (`VARCHAR(50)`, NULL permitido): Ubicación física (ej. `Rack-Santiago-Fila-1`).
    - `updated_at` (`TIMESTAMPTZ`): Fecha y hora de la última actualización.
 
-2. **Tabla `devices`**: Almacena el inventario del dispositivo. Los campos núcleo van en columnas y el resto en `attributes`.
+3. **Tabla `devices`**: Almacena el inventario del dispositivo. Los campos núcleo van en columnas y el resto en `attributes`.
    - `device_id` (`VARCHAR(64)`, PK): Identificador único del dispositivo (UDID / Serial).
    - `platform` (`VARCHAR(20)`, NOT NULL): Plataforma (`ios` o `android`).
    - `host_pc` (`VARCHAR(100)`, NOT NULL, FK -> `hosts.host_pc`): Equipo host al que está conectado.
-   - `country` (`VARCHAR(50)`, NOT NULL): País de ubicación (ej. `Chile`, `Argentina`, `Peru`).
+   - `country` (`CHAR(2)`, NOT NULL, FK -> `countries.code`): País de ubicación como código ISO (ej. `CL`, `AR`, `PE`).
    - `status` (`VARCHAR(20)`): Estado operativo (`active`, `maintenance`, `retired`).
    - `attributes` (`JSONB`, NOT NULL, por defecto `{}`): Atributos libres, por ejemplo `alias_name` (alias del equipo), `model` (ej. `iPhone 12,1`), `os_version` (ej. `17.4`) y `battery_design_cap` (capacidad de fábrica en mAh).
    - `updated_at` (`TIMESTAMPTZ`): Fecha y hora de la última actualización.
 
-3. **Hypertable `device_telemetry`**: Almacena las mediciones en series temporales.
+4. **Hypertable `device_telemetry`**: Almacena las mediciones en series temporales.
    - `time` (`TIMESTAMPTZ`, NOT NULL): Marca de tiempo de la muestra.
    - `device_id` (`VARCHAR(64)`, FK -> `devices.device_id`): Dispositivo asociado.
    - `data` (`JSONB`, NOT NULL, por defecto `{}`): Métricas como objeto JSON libre, por ejemplo `battery_pct`, `temp_celsius` o `cpu_usage`. El esquema no limita sus claves.
@@ -112,6 +120,20 @@ psql -U <usuario> -h <host> -d attelemetry -f migrations/002_devices_attributes_
 > - Mientras corre la migración se detiene la ingesta de telemetría.
 > - Las vistas que dependan de las columnas antiguas bloquean el `DROP COLUMN`; revísalas antes.
 > - Si los dispositivos de un host discrepan en `host_ip` o `host_location`, el host toma los valores del dispositivo actualizado más recientemente. Una ubicación vacía pasa a `NULL`.
+> - No es idempotente: una segunda ejecución falla en `CREATE TABLE` y revierte todo.
+
+Si `devices.country` todavía guarda nombres en texto libre, aplica `migrations/003_countries.sql`. Crea la tabla `countries` con los 249 códigos ISO, convierte `devices.country` a `CHAR(2)` mapeando cada valor a su código y añade la llave foránea. Antes de cambiar nada verifica que todos los valores existentes se puedan mapear; si alguno no se puede, la migración falla y lista los valores (`Valores de country sin código ISO: ...`). Corrige o elimina esas filas y vuelve a ejecutarla. Es independiente de las migraciones 001 y 002, así que el orden no importa. Todo se ejecuta en una sola transacción, con `lock_timeout` de 5 segundos y `client_encoding` en UTF8:
+
+```bash
+psql -U <usuario> -h <host> -d attelemetry -f migrations/003_countries.sql
+```
+
+> **Advertencias**
+> - Haz un respaldo antes de aplicarla, por ejemplo con `pg_dump -U <usuario> -h <host> -t devices attelemetry > devices_backup.sql`. No hay migración inversa.
+> - Detén la API y despliega el binario nuevo junto con la migración. El binario antiguo no resuelve el país y el esquema nuevo rechaza nombres largos.
+> - `ALTER TYPE` reescribe `devices` con bloqueo exclusivo: la ingesta de telemetría se detiene hasta el `COMMIT`.
+> - Las vistas u otros objetos que dependan de `devices.country` hacen fallar `ALTER TYPE`; revísalos antes.
+> - En bases con locale `C`, `lower()` solo pliega ASCII: un valor antiguo con tildes y en mayúsculas (por ejemplo `PERÚ`) se listaría como sin mapear. Corrígelo antes de migrar.
 > - No es idempotente: una segunda ejecución falla en `CREATE TABLE` y revierte todo.
 
 ---
@@ -261,6 +283,20 @@ Los atributos van en el nivel superior del elemento y no se envía `attributes` 
 - **`attributes`**: en el formato nuevo, cualquier clave es válida y se admiten valores anidados. Los campos legados enviados en el mismo elemento se agregan solo si su clave no existe en `attributes`, así que `attributes` gana en caso de conflicto.
 - `model` y `battery_design_cap` ya guardados no cambian con un nuevo envío; solo se escriben si todavía no existen. `alias_name` y `os_version` sí se actualizan, así que un envío legado sin ellos los deja en `""`.
 - Si `attributes` no es un objeto (por ejemplo, un número o un arreglo), la petición se rechaza con `400`.
+
+#### Resolución de `country`
+
+`country` acepta el código ISO o un nombre o alias de la tabla `countries`. La comparación no distingue mayúsculas ni minúsculas y recorta los espacios al inicio y al final. El servidor guarda siempre el código:
+
+| Valor enviado | Se guarda |
+|---|---|
+| `Chile`, ` cl `, `CL` | `CL` |
+| `Perú`, `peru`, `PERÚ` | `PE` |
+| `usa` | `US` |
+
+- Un valor desconocido (por ejemplo `Atlantis`) hace fallar la sentencia de ese dispositivo con un error de `NOT NULL`. Como es una sola sentencia, también se revierte el upsert de su host. El error se registra como `[ERROR] Upsert falló para dispositivo ...` y la respuesta sigue siendo `200`.
+- Un dispositivo ya registrado que se envía con un país desconocido no se actualiza.
+- Go convierte el valor a minúsculas antes de enviarlo a la base de datos, porque `lower()` de PostgreSQL solo pliega ASCII en bases con locale `C`.
 
 #### Respuestas
 

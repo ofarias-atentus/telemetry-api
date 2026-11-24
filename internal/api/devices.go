@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 const upsertDeviceQuery = `
@@ -20,7 +21,12 @@ const upsertDeviceQuery = `
 		)
 		INSERT INTO devices (
 			device_id, platform, host_pc, country, status, attributes, updated_at
-		) VALUES ($1, $2, $3, $6, $7, $8, NOW())
+		) VALUES ($1, $2, $3, (
+			SELECT c.code FROM countries c
+			WHERE c.code = upper(btrim($6::text))
+				OR lower(c.name) = lower(btrim($6))
+				OR lower(btrim($6)) = ANY(c.aliases)
+		), $7, $8, NOW())
 		ON CONFLICT (device_id) DO UPDATE SET
 			host_pc = EXCLUDED.host_pc,
 			country = EXCLUDED.country,
@@ -47,6 +53,8 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
 	for _, d := range devices {
+		// lower() de Postgres depende de la locale y en C solo pliega ASCII; Go pliega Unicode.
+		country := strings.ToLower(strings.TrimSpace(d.Country))
 		_, err := s.db.Exec(
 			ctx,
 			upsertDeviceQuery,
@@ -55,7 +63,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			d.HostName,
 			d.HostIP,
 			d.hostLocation(),
-			d.Country,
+			country,
 			d.Status,
 			d.attributes(),
 		)

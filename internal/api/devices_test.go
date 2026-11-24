@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -114,10 +115,10 @@ func TestHandleDevicesExecArgs(t *testing.T) {
 	t.Parallel()
 
 	want := [][]any{
-		{"d1", "ios", "pc1", "10.0.0.1", ptr("loc1"), "CL", "active", map[string]any{
+		{"d1", "ios", "pc1", "10.0.0.1", ptr("loc1"), "cl", "active", map[string]any{
 			"alias_name": "a1", "model": "m1", "os_version": "17", "battery_design_cap": 4000,
 		}},
-		{"d2", "android", "pc2", "10.0.0.2", ptr("loc2"), "AR", "inactive", map[string]any{
+		{"d2", "android", "pc2", "10.0.0.2", ptr("loc2"), "ar", "inactive", map[string]any{
 			"alias_name": "a2", "model": "m2", "os_version": "14", "battery_design_cap": 5000,
 		}},
 	}
@@ -172,6 +173,43 @@ func TestHandleDevicesHostLocationArg(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("location arg = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleDevicesCountryArg(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		country string
+		want    string
+	}{
+		{name: "code is lowercased", country: "CL", want: "cl"},
+		{name: "spaces are trimmed", country: " Chile ", want: "chile"},
+		{name: "accented capitals are folded", country: "MÉXICO", want: "méxico"},
+		{name: "accented name", country: "PERÚ", want: "perú"},
+		{name: "unknown value is passed through", country: "Narnia", want: "narnia"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := fmt.Sprintf(
+				`[{"device_id":"d1","platform":"ios","host_name":"pc","host_ip":"10.0.0.1","country":%q,"status":"online"}]`,
+				tt.country,
+			)
+			db := &fakeDB{}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(body))
+			NewServer(db).Routes().ServeHTTP(httptest.NewRecorder(), req)
+
+			if len(db.execCalls) != 1 {
+				t.Fatalf("Exec calls = %d, want 1", len(db.execCalls))
+			}
+			if got := db.execCalls[0].args[5]; got != tt.want {
+				t.Errorf("country arg = %#v, want %q", got, tt.want)
 			}
 		})
 	}
@@ -234,7 +272,12 @@ func TestUpsertDeviceQueryText(t *testing.T) {
 	}
 
 	deviceContains := []string{
-		"VALUES ($1, $2, $3, $6, $7, $8, NOW())",
+		"VALUES ($1, $2, $3, ( " +
+			"SELECT c.code FROM countries c " +
+			"WHERE c.code = upper(btrim($6::text)) " +
+			"OR lower(c.name) = lower(btrim($6)) " +
+			"OR lower(btrim($6)) = ANY(c.aliases) " +
+			"), $7, $8, NOW())",
 		"ON CONFLICT (device_id) DO UPDATE SET",
 		"host_pc = EXCLUDED.host_pc",
 		"country = EXCLUDED.country",
@@ -299,7 +342,7 @@ func TestHandleDevicesAttributesFormats(t *testing.T) {
 			body: `[{"device_id":"d1","platform":"ios","host_name":"pc","host_ip":"10.0.0.1",` +
 				`"country":"CL","status":"online","attributes":{"alias_name":"a","extra":{"k":[1]}}}]`,
 			wantCode: http.StatusOK,
-			wantArgs: []any{"d1", "ios", "pc", "10.0.0.1", noLocation, "CL", "online", map[string]any{
+			wantArgs: []any{"d1", "ios", "pc", "10.0.0.1", noLocation, "cl", "online", map[string]any{
 				"alias_name": "a",
 				"extra":      map[string]any{"k": []any{1.0}},
 			}},
@@ -309,7 +352,7 @@ func TestHandleDevicesAttributesFormats(t *testing.T) {
 			body: `[{"device_id":"d1","platform":"ios","host_name":"pc","host_ip":"10.0.0.1",` +
 				`"country":"CL","status":"online","attributes":null}]`,
 			wantCode: http.StatusOK,
-			wantArgs: []any{"d1", "ios", "pc", "10.0.0.1", noLocation, "CL", "online", allZero},
+			wantArgs: []any{"d1", "ios", "pc", "10.0.0.1", noLocation, "cl", "online", allZero},
 		},
 		{
 			name:     "attributes number is rejected",

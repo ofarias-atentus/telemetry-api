@@ -40,14 +40,35 @@ func TestIntegrationIngest(t *testing.T) {
 	legacyID := deviceID + "-legacy"
 	hostPC := fmt.Sprintf("itest-host-%d", nano)
 	legacyHost := hostPC + "-legacy"
+	narniaHost := hostPC + "-narnia"
+
+	countryCases := []struct {
+		id      string
+		country string
+		want    string
+	}{
+		{deviceID + "-country-1", "Chile", "CL"},
+		{deviceID + "-country-2", " cl ", "CL"},
+		{deviceID + "-country-3", "CL", "CL"},
+		{deviceID + "-country-4", "Narnia", ""},
+		{deviceID + "-country-5", "Perú", "PE"},
+		{deviceID + "-country-6", "peru", "PE"},
+		{deviceID + "-country-7", "MÉXICO", "MX"},
+		{deviceID + "-country-8", "PERÚ", "PE"},
+	}
+	deviceIDs := []string{deviceID, secondID, legacyID}
+	for _, c := range countryCases {
+		deviceIDs = append(deviceIDs, c.id)
+	}
+
 	t.Cleanup(func() {
 		if _, err := pool.Exec(ctx, "DELETE FROM device_telemetry WHERE device_id = $1", deviceID); err != nil {
 			t.Errorf("cleanup telemetry: %v", err)
 		}
-		if _, err := pool.Exec(ctx, "DELETE FROM devices WHERE device_id = ANY($1)", []string{deviceID, secondID, legacyID}); err != nil {
+		if _, err := pool.Exec(ctx, "DELETE FROM devices WHERE device_id = ANY($1)", deviceIDs); err != nil {
 			t.Errorf("cleanup device: %v", err)
 		}
-		if _, err := pool.Exec(ctx, "DELETE FROM hosts WHERE host_pc = ANY($1)", []string{hostPC, legacyHost}); err != nil {
+		if _, err := pool.Exec(ctx, "DELETE FROM hosts WHERE host_pc = ANY($1)", []string{hostPC, legacyHost, narniaHost}); err != nil {
 			t.Errorf("cleanup hosts: %v", err)
 		}
 	})
@@ -83,6 +104,19 @@ func TestIntegrationIngest(t *testing.T) {
 		legacyID, legacyHost,
 	)
 
+	var countryEntries []string
+	for _, c := range countryCases {
+		host := hostPC
+		if c.want == "" {
+			host = narniaHost
+		}
+		countryEntries = append(countryEntries, fmt.Sprintf(
+			`{"device_id":%q,"platform":"ios","host_name":%q,"host_ip":"10.0.0.9","country":%q,"status":"online"}`,
+			c.id, host, c.country,
+		))
+	}
+	countryBody := "[" + strings.Join(countryEntries, ",") + "]"
+
 	tests := []struct {
 		name     string
 		path     string
@@ -110,6 +144,13 @@ func TestIntegrationIngest(t *testing.T) {
 			name:     "second device on the same host",
 			path:     "/api/v1/devices",
 			body:     deviceBody(secondID, "ios", "online", "10.0.0.9", ``, `{}`),
+			wantCode: http.StatusOK,
+			wantBody: `{"status":"success"}`,
+		},
+		{
+			name:     "devices with country names and an unknown one",
+			path:     "/api/v1/devices",
+			body:     countryBody,
 			wantCode: http.StatusOK,
 			wantBody: `{"status":"success"}`,
 		},
@@ -188,12 +229,12 @@ func TestIntegrationIngest(t *testing.T) {
 	if err := pool.QueryRow(
 		ctx,
 		"SELECT count(*) FROM hosts WHERE host_pc = ANY($1)",
-		[]string{hostPC, legacyHost},
+		[]string{hostPC, legacyHost, narniaHost},
 	).Scan(&hostRows); err != nil {
 		t.Fatalf("count hosts: %v", err)
 	}
 	if hostRows != 2 {
-		t.Errorf("host rows = %d, want 2", hostRows)
+		t.Errorf("host rows = %d, want 2 (no host for the unknown country)", hostRows)
 	}
 
 	var sameHostDevices int
@@ -204,8 +245,41 @@ func TestIntegrationIngest(t *testing.T) {
 	).Scan(&sameHostDevices); err != nil {
 		t.Fatalf("count devices of host: %v", err)
 	}
-	if sameHostDevices != 2 {
-		t.Errorf("devices on host = %d, want 2", sameHostDevices)
+	if wantOnHost := 2 + len(countryCases) - 1; sameHostDevices != wantOnHost {
+		t.Errorf("devices on host = %d, want %d", sameHostDevices, wantOnHost)
+	}
+
+	storedCountries := map[string]string{}
+	rows, err := pool.Query(
+		ctx,
+		"SELECT device_id, country FROM devices WHERE device_id = ANY($1)",
+		deviceIDs,
+	)
+	if err != nil {
+		t.Fatalf("query countries: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, code string
+		if err := rows.Scan(&id, &code); err != nil {
+			t.Fatalf("scan country: %v", err)
+		}
+		storedCountries[id] = code
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate countries: %v", err)
+	}
+	for _, c := range countryCases {
+		got, stored := storedCountries[c.id]
+		if c.want == "" {
+			if stored {
+				t.Errorf("%q: stored with country %q, want not stored", c.country, got)
+			}
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q: country = %q, want %q", c.country, got, c.want)
+		}
 	}
 
 	deviceChecks := []struct {

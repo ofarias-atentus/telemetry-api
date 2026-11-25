@@ -1,11 +1,19 @@
--- Los nombres de países llevan tildes y otros caracteres no ASCII
-SET client_encoding = 'UTF8';
+-- +goose Up
+-- Crea la tabla countries (códigos ISO 3166-1 alfa-2) y convierte devices.country a CHAR(2) con FK a ella.
+-- Falla si algún devices.country actual no se puede mapear a un código (por código, nombre o alias); lista los valores.
+-- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t devices.
+-- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
+-- antiguo no resuelve el país y el esquema nuevo rechaza nombres largos.
+-- ALTER TYPE reescribe devices con bloqueo exclusivo: la ingesta de telemetría se detiene hasta el COMMIT.
+-- Vistas u otros objetos que dependan de devices.country hacen fallar ALTER TYPE: revisarlos antes.
+-- La comparación usa lower() de la BD, que en bases con locale C solo pliega ASCII:
+-- un valor antiguo con tildes y todo en mayúsculas se listaría como sin mapear.
+-- Un test verifica el INSERT de countries (249 códigos ISO) y que el predicado de país
+-- coincida con el de la consulta de upsert de la API.
 
--- 1. Activar la extensión de series temporales
-CREATE EXTENSION IF NOT EXISTS timescaledb;
+SET LOCAL lock_timeout = '5s';
 
--- 2. Tabla de Países (ISO 3166-1 alfa-2); devices.country referencia countries.code
-CREATE TABLE IF NOT EXISTS countries (
+CREATE TABLE countries (
     code                 CHAR(2) PRIMARY KEY,      -- ISO 3166-1 alfa-2, en mayúsculas
     name                 VARCHAR(60) NOT NULL UNIQUE, -- Nombre en español
     aliases              TEXT[] NOT NULL DEFAULT '{}' -- Otras grafías en minúsculas (inglés, sin tildes)
@@ -263,34 +271,32 @@ INSERT INTO countries (code, name, aliases) VALUES
     ('ZW', 'Zimbabue', ARRAY['zimbabwe']::text[])
 ON CONFLICT (code) DO NOTHING;
 
--- 3. Tabla de Hosts (PC que tiene conectados los dispositivos)
-CREATE TABLE IF NOT EXISTS hosts (
-    host_pc              VARCHAR(100) PRIMARY KEY, -- Nombre del Host
-    host_ip              VARCHAR(15) NOT NULL,     -- IP del Host
-    host_location        VARCHAR(50),              -- Ej: "Rack-Santiago-Fila-1"
-    updated_at           TIMESTAMPTZ DEFAULT NOW()
+-- +goose StatementBegin
+DO $$
+DECLARE
+    unmapped TEXT;
+BEGIN
+    SELECT string_agg(DISTINCT d.country, ', ' ORDER BY d.country) INTO unmapped
+    FROM devices d
+    WHERE NOT EXISTS (
+        SELECT 1 FROM countries c
+        WHERE c.code = upper(btrim(d.country))
+            OR lower(c.name) = lower(btrim(d.country))
+            OR lower(btrim(d.country)) = ANY(c.aliases)
+    );
+    IF unmapped IS NOT NULL THEN
+        RAISE EXCEPTION 'Valores de country sin código ISO: %', unmapped;
+    END IF;
+END $$;
+-- +goose StatementEnd
+
+UPDATE devices d SET country = (
+    SELECT c.code FROM countries c
+    WHERE c.code = upper(btrim(d.country))
+        OR lower(c.name) = lower(btrim(d.country))
+        OR lower(btrim(d.country)) = ANY(c.aliases)
 );
 
--- 4. Tabla de Inventario de Dispositivos (Campos núcleo en columnas; el resto en el JSONB attributes)
-CREATE TABLE IF NOT EXISTS devices (
-    device_id            VARCHAR(64) PRIMARY KEY,
-    platform             VARCHAR(20) NOT NULL,    -- "ios" o "android"
-    host_pc              VARCHAR(100) NOT NULL CONSTRAINT devices_host_pc_fkey REFERENCES hosts(host_pc),
-    country              CHAR(2) NOT NULL CONSTRAINT devices_country_fkey REFERENCES countries(code), -- Ej: "CL", "AR", "PE"
-    status               VARCHAR(20) DEFAULT 'active', -- "active", "maintenance", "retired"
-    attributes           JSONB NOT NULL DEFAULT '{}'::jsonb, -- Ej: {"alias_name": "a", "model": "iPhone 12,1", "os_version": "17.4", "battery_design_cap": 4000}
-    updated_at           TIMESTAMPTZ DEFAULT NOW()
-);
+ALTER TABLE devices ALTER COLUMN country TYPE CHAR(2);
 
--- 5. Tabla de Telemetría (Series Temporales; las métricas van en el JSONB data)
-CREATE TABLE IF NOT EXISTS device_telemetry (
-    time                 TIMESTAMPTZ NOT NULL,
-    device_id            VARCHAR(64) REFERENCES devices(device_id),
-    data                 JSONB NOT NULL DEFAULT '{}'::jsonb  -- Métricas, ej: {"battery_pct": 80, "cpu_usage": 12.5}
-);
-
--- 6. Convertir la tabla de telemetría en Hypertable particionada por tiempo
-SELECT create_hypertable('device_telemetry', 'time', if_not_exists => TRUE);
-
--- 7. Crear índice secundario para consultas rápidas por dispositivo y tiempo
-CREATE INDEX IF NOT EXISTS idx_device_time ON device_telemetry (device_id, time DESC);
+ALTER TABLE devices ADD CONSTRAINT devices_country_fkey FOREIGN KEY (country) REFERENCES countries(code);

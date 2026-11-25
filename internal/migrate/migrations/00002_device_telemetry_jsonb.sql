@@ -1,14 +1,11 @@
-\set ON_ERROR_STOP on
-
+-- +goose Up
 -- Mueve las métricas de device_telemetry a la columna JSONB data y elimina las columnas antiguas.
--- No es idempotente: una segunda ejecución falla en ADD COLUMN y revierte todo.
--- No hay migración inversa: hacer antes un respaldo con pg_dump -t device_telemetry.
--- Detener la API o desplegar el binario nuevo junto con esta migración; el binario
+-- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t device_telemetry.
+-- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
 -- antiguo no es compatible con el esquema nuevo ni al revés.
 -- El UPDATE reescribe todas las filas (más disco y WAL); en una hypertable grande puede tardar.
 -- En TimescaleDB, descomprimir antes los chunks comprimidos; los agregados continuos o
 -- políticas que usen las columnas antiguas bloquean el DROP COLUMN.
-BEGIN;
 
 SET LOCAL lock_timeout = '5s';
 
@@ -34,5 +31,3 @@ ALTER TABLE device_telemetry
     DROP COLUMN is_charging,
     DROP COLUMN cpu_usage,
     DROP COLUMN ram_usage;
-
-COMMIT;

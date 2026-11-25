@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+
+if [ -f /etc/systemd/system/atdevice-api.service ]; then
+    echo "Deteniendo servicio atdevice-api..."
+    systemctl stop atdevice-api.service || true
+fi

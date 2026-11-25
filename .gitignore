@@ -1,8 +1,13 @@
 # Binarios compilados
-atdevice-api
-telemetry-api
+/atdevice-api
+/telemetry-api
 *.exe
 *.out
 
 # Configuración local con credenciales
 .env
+.env.docker
+
+# Salidas de installer/build-installer.py
+temp/
+*.deb

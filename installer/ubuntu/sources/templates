@@ -1,0 +1,4 @@
+Template: atdevice-api/user
+Type: string
+Default: atentus
+Description: Por favor ingrese usuario para configurar instalación. Por defecto se utilizará 'atentus'.

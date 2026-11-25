@@ -158,12 +158,24 @@ func fromEnv(lookup func(string) (string, bool)) (*Config, error) {
 	return cfg, nil
 }
 
-// BuildConnString devuelve el DSN de PostgreSQL para el pool de conexiones.
+// ConnString devuelve el DSN de PostgreSQL solo con sslmode. Sirve para
+// database/sql, donde los parámetros pool_* se enviarían al servidor y
+// PostgreSQL los rechazaría.
+func (c DatabaseConfig) ConnString() string {
+	return c.connURL(url.Values{})
+}
+
+// BuildConnString devuelve el DSN de PostgreSQL para el pool de conexiones
+// de pgxpool, con los parámetros pool_max_conns y pool_min_conns.
 func (c DatabaseConfig) BuildConnString() string {
 	q := url.Values{}
-	q.Set("sslmode", c.SSLMode)
 	q.Set("pool_max_conns", strconv.Itoa(c.MaxConns))
 	q.Set("pool_min_conns", strconv.Itoa(c.MinConns))
+	return c.connURL(q)
+}
+
+func (c DatabaseConfig) connURL(q url.Values) string {
+	q.Set("sslmode", c.SSLMode)
 
 	host := c.Host
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {

@@ -35,7 +35,10 @@ YE YT
 ZA ZM ZW
 `
 
-const wantCountries = 249
+const (
+	wantCountries          = 249
+	countriesMigrationPath = "../migrate/migrations/00004_countries.sql"
+)
 
 var (
 	countryRowRe = regexp.MustCompile(
@@ -97,7 +100,7 @@ func normalizeSQL(s string) string {
 func TestCountriesSeed(t *testing.T) {
 	t.Parallel()
 
-	block := countriesInsert(t, readSchemaFile(t, "../../migrations/003_countries.sql"))
+	block := countriesInsert(t, readSchemaFile(t, countriesMigrationPath))
 	rows := parseCountries(block)
 
 	t.Run("every line of the block is a parsed row", func(t *testing.T) {
@@ -241,17 +244,6 @@ func TestCountriesSeed(t *testing.T) {
 	})
 }
 
-func TestCountriesSeedMatchesDatabaseSQL(t *testing.T) {
-	t.Parallel()
-
-	migration := countriesInsert(t, readSchemaFile(t, "../../migrations/003_countries.sql"))
-	fresh := countriesInsert(t, readSchemaFile(t, "../../database.sql"))
-
-	if migration != fresh {
-		t.Error("INSERT INTO countries differs between migrations/003_countries.sql and database.sql")
-	}
-}
-
 func TestCountryMatchingPredicateInSync(t *testing.T) {
 	t.Parallel()
 
@@ -270,12 +262,12 @@ func TestCountryMatchingPredicateInSync(t *testing.T) {
 		}
 	})
 
-	t.Run("migration 003", func(t *testing.T) {
+	t.Run("migration 00004", func(t *testing.T) {
 		t.Parallel()
 
-		migration := normalizeSQL(readSchemaFile(t, "../../migrations/003_countries.sql"))
+		migration := normalizeSQL(readSchemaFile(t, countriesMigrationPath))
 		if got := strings.Count(migration, predicate("d.country")); got != 2 {
-			t.Errorf("migration 003 has the predicate %d times (DO block and UPDATE), want 2", got)
+			t.Errorf("migration 00004 has the predicate %d times (DO block and UPDATE), want 2", got)
 		}
 	})
 }

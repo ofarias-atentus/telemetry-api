@@ -1,0 +1,27 @@
+# This is an ALLOWLIST and must not be loosened: the Dockerfile uses
+# `COPY . .` and the repo root may hold a .env with secrets.
+#
+# Allowlist: ignore everything, then re-include only what the build needs.
+# This keeps .env (secrets), .git, the local ./atdevice-api binary, docs,
+# deploy/ and installer/ out of the build context.
+*
+
+!go.mod
+!go.sum
+!cmd/
+!internal/
+
+# Embedded migrations (internal/migrate/migrations/*.sql) are covered by
+# !internal/ and are required by go:embed.
+
+# Not needed to build the binary.
+**/*_test.go
+**/testdata
+
+# Never include, even if re-included by a rule above.
+.env
+.env.*
+**/.env
+**/.env.*
+.git
+atdevice-api

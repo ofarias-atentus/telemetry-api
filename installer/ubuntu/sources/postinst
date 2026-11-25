@@ -1,0 +1,89 @@
+#!/bin/bash
+set -e
+
+. /usr/share/debconf/confmodule
+
+# Reset question every install
+db_fset atdevice-api/user seen false
+
+db_input high atdevice-api/user || true
+db_go || true
+
+db_get atdevice-api/user
+default_user=$RET
+
+if id "$default_user" >/dev/null 2>&1; then
+    echo "Se configurará con usuario: $default_user"
+else
+    echo "Usuario $default_user no existe. abortando instalación."
+    exit 1
+fi
+
+imgver="1.0.0"
+
+root_path='/srv/atdevice-api'
+share_path='/usr/share/atdevice-api'
+compose_file="$root_path/docker-compose.yml"
+compose_cmd="docker compose -f $compose_file"
+
+mkdir -p "$root_path"
+
+if [ ! -f "$compose_file" ]; then
+    echo "Creando archivo docker-compose.yml..."
+    install -m 644 "$share_path/docker-compose.yml" "$compose_file"
+    echo "Para ajustar valores manualmente, favor de modificar archivo: $compose_file"
+else
+    echo "Archivo $compose_file ya existe"
+fi
+
+env_file="$root_path/.env"
+
+set_image_tag() {
+    if grep -q '^ATDEVICE_API_TAG=' "$env_file"; then
+        sed -i "s|^ATDEVICE_API_TAG=.*|ATDEVICE_API_TAG=$imgver|" "$env_file"
+    else
+        printf '\nATDEVICE_API_TAG=%s\n' "$imgver" >> "$env_file"
+    fi
+}
+
+if [ ! -f "$env_file" ]; then
+    echo "Creando archivo .env desde plantilla..."
+    install -m 600 "$share_path/.env.docker.example" "$env_file"
+    set_image_tag
+    echo "Favor de editar $env_file con los datos de conexión a la base de datos"
+else
+    echo "Archivo $env_file ya existe"
+    set_image_tag
+    echo "ATDEVICE_API_TAG actualizado a $imgver en $env_file"
+fi
+
+chown -R "$default_user":"$default_user" "$root_path"/
+
+unit=/etc/systemd/system/atdevice-api.service
+
+if [ ! -s "$unit" ]; then
+    echo "Copiar configuración atdevice-api.service..."
+    install -m 644 "$share_path/atdevice-api.service" "$unit"
+    systemctl daemon-reload
+    systemctl enable atdevice-api.service
+    echo "Servicio instalado y habilitado, pero NO iniciado. Siguientes pasos:"
+    echo "1. Editar $root_path/.env"
+    echo "2. Revisar estado de migraciones: $compose_cmd run --rm api migrate status"
+    echo "3. Respaldar la base de datos con pg_dump y aplicar: $compose_cmd run --rm api migrate up"
+    echo "   (en bases creadas con los scripts psql antiguos usar: $compose_cmd run --rm api migrate baseline)"
+    echo "4. Iniciar servicio: systemctl start atdevice-api"
+else
+    echo "Deshabilitar atdevice-api.service..."
+    systemctl disable atdevice-api.service
+    echo "Remover archivo $unit..."
+    rm -f "$unit"
+    echo "Copiar configuración atdevice-api.service..."
+    install -m 644 "$share_path/atdevice-api.service" "$unit"
+    systemctl daemon-reload
+    systemctl enable atdevice-api.service
+    echo "El servicio atdevice-api está DETENIDO y no se reinicia automáticamente. Pasos siguientes:"
+    echo "1. Descargar la imagen: $compose_cmd pull"
+    echo "2. Revisar estado de migraciones: $compose_cmd run --rm api migrate status"
+    echo "3. Si hay migraciones pendientes, respaldar con pg_dump y ejecutar: $compose_cmd run --rm api migrate up"
+    echo "4. Iniciar servicio: systemctl restart atdevice-api"
+fi

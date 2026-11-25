@@ -1,6 +1,6 @@
 # Telemetry API (`atdevice-api`)
 
-API ingestora central escrita en **Go** para el registro de inventario y recolección masiva de telemetría de hardware (batería, temperatura, voltaje, CPU y RAM) de dispositivos móviles (**iOS** y **Android**) distribuidos en hosts de monitoreo. Utiliza **PostgreSQL** con **TimescaleDB** para el almacenamiento optimizado de series temporales.
+API ingestora central escrita en **Go** para el registro de inventario y recolección masiva de telemetría de hardware (batería, temperatura, voltaje, CPU y RAM) de dispositivos móviles (**iOS** y **Android**) distribuidos en hosts de monitoreo. Utiliza **PostgreSQL** para el almacenamiento, con **TimescaleDB** opcional para las series temporales.
 
 ---
 
@@ -8,15 +8,17 @@ API ingestora central escrita en **Go** para el registro de inventario y recolec
 
 - **Inventario de Dispositivos (`Upsert`)**: Registro y actualización continua del estado, versión de sistema operativo y ubicación física/lógica (host, IP, rack, país) de cada dispositivo.
 - **Ingesta Masiva de Telemetría (`CopyFrom`)**: Inserción por lotes de alta velocidad utilizando el protocolo binario `COPY` de PostgreSQL a través de `pgx/v5`.
-- **Series Temporales con TimescaleDB**: Particionamiento automático por tiempo (`hypertable`) e indexación compuesta por dispositivo y marca temporal descendente.
+- **Series Temporales con TimescaleDB**: Si TimescaleDB está disponible, la telemetría se particiona automáticamente por tiempo (`hypertable`) e indexa por dispositivo y marca temporal descendente.
+- **Migraciones con goose**: El esquema se versiona con migraciones embebidas en el binario, y `serve` se niega a arrancar si la base no está en la versión esperada.
 - **Logs Estructurados (`log/slog`)**: Una línea por solicitud con `request_id`, método, ruta, estado y duración, y un `X-Request-ID` en cada respuesta para seguir una petición en los logs.
 
 ---
 
 ## Requisitos Previos
 
-- **Go**: `1.26+` (según definición en `go.mod`)
-- **PostgreSQL**: `14+` con la extensión **TimescaleDB** instalada y activa.
+- **Go**: `1.26.8+` (según `go.mod`). No hace falta si solo se usa la imagen Docker.
+- **PostgreSQL**: `14+`. **TimescaleDB** es opcional: si el servidor la tiene, la migración `00001` convierte `device_telemetry` en hypertable; si no, la tabla es una tabla normal. La API no usa funciones de TimescaleDB.
+- **Docker** (opcional): para construir la imagen y para el despliegue con `docker compose`. Ver [Docker](#docker).
 
 ---
 
@@ -24,11 +26,17 @@ API ingestora central escrita en **Go** para el registro de inventario y recolec
 
 ```text
 telemetry-api/
-├── .env.example     # Plantilla de variables de entorno (copiar a .env)
-├── database.sql     # Script DDL para inicializar tablas, hypertable e índices
-├── go.mod           # Definición del módulo y dependencias Go
-├── go.sum           # Checksums de dependencias
-├── main.go          # Punto de entrada: carga la configuración (.env y entorno), crea el logger, conecta a PostgreSQL y arranca el servidor
+├── .env.example          # Plantilla de variables de entorno (copiar a .env)
+├── .dockerignore         # Lista blanca del contexto de build: go.mod, go.sum, cmd/ e internal/
+├── Dockerfile            # Imagen en dos etapas (golang para compilar, distroless nonroot para ejecutar)
+├── go.mod                # Definición del módulo y dependencias Go
+├── go.sum                # Checksums de dependencias
+├── cmd/
+│   └── atdevice-api/            # Punto de entrada: solo la CLI
+│       ├── main.go              # Despacho de subcomandos (serve, migrate, help) y códigos de salida
+│       ├── serve.go             # serve: comprueba la conexión y el esquema, sirve la API y apaga ordenadamente
+│       ├── migrate.go           # migrate status, up y baseline
+│       └── main_test.go         # Pruebas de la CLI
 ├── internal/
 │   ├── api/                     # Servidor HTTP: handlers, modelos, middleware de logs y pruebas
 │   │   ├── server.go            # Interfaz DB, Server, NewServer, Routes y Handler
@@ -42,19 +50,34 @@ telemetry-api/
 │   │   ├── devices_test.go      # Pruebas unitarias de /api/v1/devices
 │   │   ├── telemetry_test.go    # Pruebas unitarias de /api/v1/telemetry
 │   │   ├── server_test.go       # Pruebas de enrutamiento
-│   │   ├── schema_test.go       # Pruebas del seed de countries y de database.sql / migraciones
-│   │   └── integration_test.go  # Prueba de integración (tag integration)
+│   │   ├── schema_test.go       # Pruebas del seed de countries (00004) y del predicado de país
+│   │   └── integration_test.go  # Prueba de integración de la API (tag integration)
 │   ├── config/                  # Carga y validación de la configuración desde .env y variables de entorno
 │   │   ├── config.go
-│   │   └── config_test.go
-│   └── logging/                 # Construcción del logger slog (texto o JSON, nivel)
-│       ├── logging.go
-│       └── logging_test.go
-├── migrations/
-│   ├── 001_device_telemetry_jsonb.sql  # Mueve las métricas antiguas a la columna data
-│   ├── 002_devices_attributes_jsonb.sql  # Crea hosts y mueve los campos de devices a attributes
-│   └── 003_countries.sql  # Crea countries y convierte devices.country a código ISO
-└── README.md        # Documentación del proyecto
+│   │   ├── config_test.go
+│   │   └── connstring_test.go   # Pruebas de las cadenas de conexión
+│   ├── logging/                 # Construcción del logger slog (texto o JSON, nivel)
+│   │   ├── logging.go
+│   │   └── logging_test.go
+│   └── migrate/                 # Migraciones con goose, embebidas en el binario
+│       ├── migrate.go           # LatestVersion, Status, CheckVersion y lectura de la versión aplicada
+│       ├── up.go                # Up: bloqueo advisory, rechazo de bases sin historial y search_path
+│       ├── baseline.go          # Baseline: registra el historial de bases creadas con los scripts antiguos
+│       ├── migrate_test.go      # Pruebas sin base de datos
+│       ├── baseline_test.go     # Pruebas de la detección de versión
+│       ├── integration_test.go  # Prueba de integración de migraciones (tag integration)
+│       └── migrations/          # Migraciones SQL de goose (embebidas con go:embed)
+│           ├── 00001_initial.sql               # Esquema original (TimescaleDB solo si está disponible)
+│           ├── 00002_device_telemetry_jsonb.sql # Mueve las métricas antiguas a la columna data
+│           ├── 00003_devices_attributes_jsonb.sql # Crea hosts y mueve los campos de devices a attributes
+│           └── 00004_countries.sql             # Crea countries y convierte devices.country a código ISO
+├── deploy/
+│   ├── docker-compose.yml       # Compose de referencia para ejecutar la imagen
+│   └── .env.docker.example      # Plantilla de .env para docker compose
+├── installer/                   # Paquete .deb para Ubuntu 20.04 (ver installer/ubuntu/README.md)
+│   ├── build-installer.py       # Genera el paquete
+│   └── ubuntu/                  # Metadatos del paquete y unidad systemd
+└── README.md            # Documentación del proyecto
 ```
 
 ---
@@ -63,10 +86,11 @@ telemetry-api/
 
 ### 1. Preparar la Base de Datos
 
-Crea la base de datos en PostgreSQL (por ejemplo, `attelemetry`) y ejecuta el script `database.sql` para habilitar `timescaledb` y crear las tablas `countries`, `hosts`, `devices` y `device_telemetry`:
+Crea una base de datos vacía en PostgreSQL (por ejemplo, `attelemetry`). El esquema lo crea el propio binario con sus migraciones, así que ya no hace falta ejecutar `psql -f database.sql`. Configura antes el archivo `.env` (paso 2) y luego:
 
 ```bash
-psql -U <usuario> -h <host> -d attelemetry -f database.sql
+./atdevice-api migrate status   # muestra la versión esperada y la aplicada
+./atdevice-api migrate up       # crea el esquema completo en una base vacía
 ```
 
 #### Modelo de Datos
@@ -75,7 +99,7 @@ psql -U <usuario> -h <host> -d attelemetry -f database.sql
    - `code` (`CHAR(2)`, PK): Código ISO en mayúsculas (ej. `CL`).
    - `name` (`VARCHAR(60)`, NOT NULL, UNIQUE): Nombre en español (ej. `Chile`, `Perú`).
    - `aliases` (`TEXT[]`): Otras grafías en minúsculas, como nombres en inglés o formas sin tildes (ej. `peru`, `usa`).
-   - El `INSERT` de esta tabla está duplicado en `database.sql` y en `migrations/003_countries.sql`; un test verifica que ambos bloques sean idénticos.
+   - El `INSERT` de esta tabla está solo en la migración `00004_countries.sql`. Un test verifica los 249 códigos, que los nombres sean únicos, que ningún código, nombre o alias apunte a dos países, y que el predicado de búsqueda coincida con el de la consulta de upsert.
 
 2. **Tabla `hosts`**: Un registro por PC de monitoreo, compartido por todos sus dispositivos.
    - `host_pc` (`VARCHAR(100)`, PK): Nombre del equipo host.
@@ -92,55 +116,59 @@ psql -U <usuario> -h <host> -d attelemetry -f database.sql
    - `attributes` (`JSONB`, NOT NULL, por defecto `{}`): Atributos libres, por ejemplo `alias_name` (alias del equipo), `model` (ej. `iPhone 12,1`), `os_version` (ej. `17.4`) y `battery_design_cap` (capacidad de fábrica en mAh).
    - `updated_at` (`TIMESTAMPTZ`): Fecha y hora de la última actualización.
 
-4. **Hypertable `device_telemetry`**: Almacena las mediciones en series temporales.
+4. **Tabla `device_telemetry`**: Almacena las mediciones en series temporales. Es una hypertable cuando TimescaleDB está disponible.
    - `time` (`TIMESTAMPTZ`, NOT NULL): Marca de tiempo de la muestra.
    - `device_id` (`VARCHAR(64)`, FK -> `devices.device_id`): Dispositivo asociado.
    - `data` (`JSONB`, NOT NULL, por defecto `{}`): Métricas como objeto JSON libre, por ejemplo `battery_pct`, `temp_celsius` o `cpu_usage`. El esquema no limita sus claves.
 
 #### Migraciones
 
-Si la base de datos ya tiene `device_telemetry` con las columnas antiguas (`battery_pct`, `battery_health_pct`, `temp_celsius`, `voltage_v`, `cycle_count`, `is_charging`, `cpu_usage` y `ram_usage`), aplica `migrations/001_device_telemetry_jsonb.sql`. Mueve las métricas a la columna `data` y elimina las columnas antiguas. Todo se ejecuta en una sola transacción:
+Las migraciones usan [goose](https://github.com/pressly/goose) (`github.com/pressly/goose/v3`) y van embebidas en el binario desde `internal/migrate/migrations/`, así que no hay archivos SQL que copiar. El historial se guarda en la tabla `goose_db_version`.
+
+| Versión | Archivo | Qué hace |
+|---|---|---|
+| 1 | `00001_initial.sql` | Esquema original: `devices` y `device_telemetry` con columnas de métricas. Activa TimescaleDB y la hypertable solo si la extensión está disponible. |
+| 2 | `00002_device_telemetry_jsonb.sql` | Mueve las 8 métricas antiguas a la columna `data` (JSONB) y elimina esas columnas. |
+| 3 | `00003_devices_attributes_jsonb.sql` | Crea `hosts`, mueve `host_ip` y `host_location` ahí, mueve `alias_name`, `model`, `os_version` y `battery_design_cap` a `devices.attributes` y añade la FK de `devices.host_pc`. |
+| 4 | `00004_countries.sql` | Crea `countries` (249 códigos ISO), convierte `devices.country` a `CHAR(2)` con FK y falla si algún valor existente no se puede mapear. |
+
+La versión esperada por el binario es `LatestVersion` (`internal/migrate/migrate.go`), que hoy vale `4`. Cada cambio de esquema nuevo es un archivo numerado de forma correlativa y una subida de `LatestVersion`.
+
+Comandos:
 
 ```bash
-psql -U <usuario> -h <host> -d attelemetry -f migrations/001_device_telemetry_jsonb.sql
+./atdevice-api migrate status     # sale con 0 solo si la base está al día
+./atdevice-api migrate up         # aplica las pendientes (o crea el esquema en una base vacía)
+./atdevice-api migrate baseline   # una sola vez, para bases creadas con los scripts SQL antiguos
 ```
 
-> **Advertencias**
-> - Haz un respaldo antes de aplicar la migración, por ejemplo con `pg_dump -U <usuario> -h <host> -t device_telemetry attelemetry > device_telemetry_backup.sql`. No hay migración inversa.
-> - Detén la API y despliega el binario nuevo junto con la migración. El esquema antiguo y el nuevo no son compatibles: cada binario falla con el otro.
-> - La migración reescribe todas las filas; en una hypertable grande puede tardar y usa más disco y WAL. Si la compresión de TimescaleDB está activa, descomprime antes los chunks comprimidos. Los continuous aggregates o políticas que usen las columnas antiguas bloquean el `DROP COLUMN`, así que revísalos antes.
-> - La migración fija `lock_timeout` en 5 segundos: si no obtiene los bloqueos a tiempo, falla en lugar de esperar.
-> - Ejecutarla por segunda vez falla y hace rollback, sin cambios.
-> - Las métricas con valor `NULL` no se copian a `data`.
-> - Las instalaciones nuevas no necesitan la migración: `database.sql` ya crea la tabla en el formato nuevo.
+- `migrate status` imprime la versión esperada y la aplicada. Sale con `0` si coinciden, y con `1` si la base está pendiente, adelantada o sin historial.
+- `migrate up` toma un bloqueo advisory de PostgreSQL. Si otra ejecución ya está migrando, espera a que termine. La comprobación de historial se hace antes de ese bloqueo, así que conviene ejecutarlo desde un solo lugar a la vez.
+- Si la base tiene tablas del esquema antiguo (`countries`, `device_telemetry`, `devices` o `hosts`) pero no tiene `goose_db_version`, `migrate up` se niega sin tocarla y pide ejecutar `migrate baseline`.
+- `migrate baseline` detecta la versión (1 a 4) a partir del catálogo y crea `goose_db_version` con las filas 0 a N, todo en una transacción. No cambia nada más. Se niega si ya existe el historial, si la base está vacía o si el esquema no coincide con ninguna versión conocida. Después ejecuta `migrate up` para aplicar lo que falte.
+- Las migraciones fijan `search_path` a `public`. Cada una corre en su propia transacción y son irreversibles: no tienen sección `Down`.
+- Las migraciones `00002` a `00004` fijan `lock_timeout` en 5 segundos, así que si no obtienen los bloqueos a tiempo fallan en lugar de esperar. `00001` no lo fija.
 
-Si la base de datos ya tiene `devices` con las columnas antiguas (`host_ip`, `host_location`, `alias_name`, `model`, `os_version` o `battery_design_cap`), aplica `migrations/002_devices_attributes_jsonb.sql`. Crea la tabla `hosts` con un registro por `host_pc`, mueve los campos del host a `hosts` y los atributos a `devices.attributes`, y luego añade la llave foránea. Es independiente de la 001, así que el orden entre ambas no importa. Todo se ejecuta en una sola transacción, con `lock_timeout` de 5 segundos:
+#### Actualizar una base existente
 
-```bash
-psql -U <usuario> -h <host> -d attelemetry -f migrations/002_devices_attributes_jsonb.sql
-```
-
-> **Advertencias**
-> - Haz un respaldo antes de aplicarla, por ejemplo con `pg_dump -U <usuario> -h <host> -t devices attelemetry > devices_backup.sql`. No hay migración inversa.
-> - Detén la API y despliega el binario nuevo junto con la migración. El esquema antiguo y el nuevo no son compatibles.
-> - Mientras corre la migración se detiene la ingesta de telemetría.
-> - Las vistas que dependan de las columnas antiguas bloquean el `DROP COLUMN`; revísalas antes.
-> - Si los dispositivos de un host discrepan en `host_ip` o `host_location`, el host toma los valores del dispositivo actualizado más recientemente. Una ubicación vacía pasa a `NULL`.
-> - No es idempotente: una segunda ejecución falla en `CREATE TABLE` y revierte todo.
-
-Si `devices.country` todavía guarda nombres en texto libre, aplica `migrations/003_countries.sql`. Crea la tabla `countries` con los 249 códigos ISO, convierte `devices.country` a `CHAR(2)` mapeando cada valor a su código y añade la llave foránea. Antes de cambiar nada verifica que todos los valores existentes se puedan mapear; si alguno no se puede, la migración falla y lista los valores (`Valores de country sin código ISO: ...`). Corrige o elimina esas filas y vuelve a ejecutarla. Es independiente de las migraciones 001 y 002, así que el orden no importa. Todo se ejecuta en una sola transacción, con `lock_timeout` de 5 segundos y `client_encoding` en UTF8:
-
-```bash
-psql -U <usuario> -h <host> -d attelemetry -f migrations/003_countries.sql
-```
+1. Detén la API.
+2. Haz un respaldo de la base: `pg_dump -U <usuario> -h <host> -d attelemetry > attelemetry_backup.sql`.
+3. Despliega el binario nuevo junto con la migración.
+4. Solo para bases creadas con los scripts `database.sql` y `migrations/` antiguos (sin `goose_db_version`), registra el historial una vez: `./atdevice-api migrate baseline`.
+5. Aplica lo pendiente: `./atdevice-api migrate up`.
+6. Inicia la API: `./atdevice-api serve`.
 
 > **Advertencias**
-> - Haz un respaldo antes de aplicarla, por ejemplo con `pg_dump -U <usuario> -h <host> -t devices attelemetry > devices_backup.sql`. No hay migración inversa.
-> - Detén la API y despliega el binario nuevo junto con la migración. El binario antiguo no resuelve el país y el esquema nuevo rechaza nombres largos.
-> - `ALTER TYPE` reescribe `devices` con bloqueo exclusivo: la ingesta de telemetría se detiene hasta el `COMMIT`.
-> - Las vistas u otros objetos que dependan de `devices.country` hacen fallar `ALTER TYPE`; revísalos antes.
-> - En bases con locale `C`, `lower()` solo pliega ASCII: un valor antiguo con tildes y en mayúsculas (por ejemplo `PERÚ`) se listaría como sin mapear. Corrígelo antes de migrar.
-> - No es idempotente: una segunda ejecución falla en `CREATE TABLE` y revierte todo.
+> - Haz un respaldo antes de `migrate up`. No hay migración inversa.
+> - Detén la API y despliega el binario nuevo junto con la migración. El binario antiguo inserta en columnas que ya no existen, y el esquema nuevo necesita columnas que el binario antiguo no conoce: ninguno funciona con el esquema del otro.
+> - `serve` nunca migra. Si la versión del esquema no coincide, se niega a arrancar con código 1.
+> - `00002` reescribe todas las filas de `device_telemetry`: usa más disco y WAL, y en una hypertable grande puede tardar. Las métricas con valor `NULL` no se copian a `data`.
+> - `00003` y `00004` detienen la ingesta de telemetría hasta el `COMMIT`. `00004` cambia el tipo de `devices.country` con `ALTER TYPE`, que reescribe la tabla con bloqueo exclusivo.
+> - Revisa antes la compresión de TimescaleDB (descomprime los chunks comprimidos que toque la migración) y los continuous aggregates o vistas que dependan de las columnas o de `devices.country`: bloquean `DROP COLUMN` y `ALTER TYPE`.
+> - Si los dispositivos de un host discrepan en `host_ip` o `host_location`, `hosts` toma los valores del dispositivo actualizado más recientemente. Una ubicación vacía pasa a `NULL`.
+> - `00004` falla si algún `devices.country` existente no se puede mapear a un código por código, nombre o alias, y lista los valores (`Valores de country sin código ISO: ...`). Corrige o elimina esas filas y vuelve a ejecutar. En bases con locale `C`, `lower()` solo pliega ASCII: un valor con tildes y en mayúsculas (por ejemplo `PERÚ`) se listaría como sin mapear, así que corrígelo antes.
+> - Cada migración que falla hace rollback de sí misma; las anteriores ya aplicadas se quedan. Ejecutar de nuevo una migración ya aplicada no es posible porque el historial lo impide.
+> - Las instalaciones nuevas no necesitan `baseline`: `migrate up` sobre una base vacía crea el esquema completo.
 
 ---
 
@@ -169,7 +197,7 @@ LOG_FORMAT=text
 
 | Variable | Obligatoria | Por defecto | Descripción |
 |---|---|---|---|
-| `SERVER_PORT` | No | `8080` | Puerto HTTP, de 1 a 65535. |
+| `SERVER_PORT` | No | `8080` | Puerto HTTP, de 1 a 65535. `serve --port` lo sustituye. |
 | `DB_HOST` | Sí | — | Host de PostgreSQL. Se admiten IPv6 entre corchetes, como `[::1]`. |
 | `DB_PORT` | No | `5432` | Puerto de PostgreSQL, de 1 a 65535. |
 | `DB_USER` | Sí | — | Usuario de PostgreSQL. |
@@ -191,7 +219,7 @@ LOG_FORMAT=text
   DB_PASSWORD='mi $ecreto #1'
   ```
 - El usuario y la contraseña se escapan al construir la cadena de conexión, así que admiten caracteres especiales.
-- Si falta una variable obligatoria o un valor no es válido, la API registra todos los errores juntos en una línea `ERROR` al arrancar y termina con código 1. Esa línea no usa `LOG_FORMAT` ni `LOG_LEVEL` (ver [Errores de arranque](#errores-de-arranque)).
+- Si falta una variable obligatoria o un valor no es válido, la API registra todos los errores juntos en una línea `ERROR` al arrancar y termina con código 2. Esa línea no usa `LOG_FORMAT` ni `LOG_LEVEL` (ver [Errores de arranque](#errores-de-arranque)).
 - Si no existe `.env`, no es un error siempre que las variables estén definidas en el entorno.
 
 > **Advertencias**
@@ -210,24 +238,102 @@ LOG_FORMAT=text
    ```
 2. Iniciar el servidor:
    ```bash
-   go run main.go
+   go run ./cmd/atdevice-api serve
    ```
 
 ### Opción B: Compilar y ejecutar el binario
 
 1. Compilar el binario `atdevice-api`:
    ```bash
-   go build -o atdevice-api main.go
+   go build -o atdevice-api ./cmd/atdevice-api
    ```
-2. Ejecutar el binario (asegúrate de que `.env` esté en el directorio de trabajo actual, o de que las variables estén definidas en el entorno):
+2. Revisar o aplicar las migraciones (asegúrate de que `.env` esté en el directorio de trabajo actual, o de que las variables estén definidas en el entorno):
    ```bash
-   ./atdevice-api
+   ./atdevice-api migrate status
+   ./atdevice-api migrate up
    ```
+3. Iniciar la API:
+   ```bash
+   ./atdevice-api serve
+   ```
+
+### Subcomandos
+
+| Comando | Descripción |
+|---|---|
+| `serve [--host HOST] [--port PUERTO]` | Comprueba la conexión y que el esquema esté en la versión esperada, y sirve la API. Nunca migra. Por defecto escucha en todas las interfaces y en `SERVER_PORT`. `--port` acepta de 1 a 65535 (0 usa `SERVER_PORT`). |
+| `migrate status` | Compara la versión esperada con la aplicada (sale con `1` si no coinciden). |
+| `migrate up` | Aplica las migraciones pendientes. |
+| `migrate baseline` | Registra el historial en una base creada con los scripts SQL antiguos. |
+| `help` | Muestra el uso. `-h` y `--help` hacen lo mismo. |
+
+Ejecutar el binario sin argumentos muestra el uso y sale con código `2`.
 
 Al iniciar correctamente, verás en consola (stderr):
 ```text
 time=2026-11-25T15:06:20.102-03:00 level=INFO msg="API Ingestora central escuchando" addr=:8080
 ```
+
+#### Códigos de salida
+
+| Código | Significado |
+|---|---|
+| `0` | Correcto, ayuda, apagado normal o `migrate status` al día. |
+| `1` | Versión del esquema distinta de la esperada: pendiente, adelantada o sin historial. También `migrate baseline` rechazado porque ya existe el historial. |
+| `2` | Uso incorrecto, configuración, conectividad, permisos u otro error operativo. |
+
+#### Servidor HTTP y apagado
+
+- Límites del servidor: cabeceras (`ReadHeaderTimeout`) 10 s, lectura 30 s, escritura 30 s, inactividad 120 s y cabeceras máximas de 64 KiB.
+- Al recibir `SIGINT` o `SIGTERM`, `serve` registra `señal de apagado recibida`, deja de aceptar conexiones y espera hasta 15 s a que terminen las peticiones en curso. Si no terminan a tiempo, cierra el servidor a la fuerza. Al final cierra el pool de PostgreSQL.
+
+---
+
+## Docker
+
+El `Dockerfile` de la raíz construye la imagen en dos etapas: compila el binario con `golang:1.27.1-bookworm` (`CGO_ENABLED=0`, `GOTOOLCHAIN=local`) y lo copia a `gcr.io/distroless/static-debian12:nonroot`, que no tiene shell. El contenedor ejecuta `atdevice-api serve` por defecto y corre como usuario `nonroot`.
+
+La configuración no va en la imagen. `.dockerignore` es una lista blanca (solo `go.mod`, `go.sum`, `cmd/` e `internal/`), así que el `.env` del repositorio nunca entra en el contexto de build. La configuración se pasa en tiempo de ejecución con `--env-file`; la plantilla está en `deploy/.env.docker.example`. Las comillas simples que la plantilla usa para valores con `$`, `#` o espacios solo aplican a Compose (`env_file`) y al `.env` de godotenv. `docker run --env-file` no quita comillas, así que ahí esos valores se escriben sin comillas.
+
+```bash
+docker build -t atdevice-api .
+
+# Revisar o aplicar migraciones (serve nunca migra)
+docker run --rm --env-file .env.docker atdevice-api migrate status
+docker run --rm --env-file .env.docker atdevice-api migrate up
+
+# Servir la API
+docker run -d --name atdevice-api --env-file .env.docker -p 8080:8080 --stop-timeout 30 atdevice-api
+```
+
+Notas:
+- Para una base creada con los scripts antiguos, el registro inicial es `docker run --rm --env-file .env.docker atdevice-api migrate baseline`, antes de `migrate up`.
+- Si PostgreSQL está en el host, usa `DB_HOST=host.docker.internal`. En Linux añade `--add-host=host.docker.internal:host-gateway` al `docker run` (el compose ya lo incluye en `extra_hosts`). PostgreSQL debe aceptar conexiones desde la red de Docker (ver [installer/ubuntu/README.md](installer/ubuntu/README.md)).
+- `--stop-timeout 30`: `serve` tarda hasta 15 s en apagarse, y el valor por defecto de Docker (10 s) es menor.
+- No hay `HEALTHCHECK`: la imagen no tiene shell ni `curl`, y la API no tiene endpoint de salud.
+- Los logs salen por stderr: `docker logs atdevice-api`.
+- La API no tiene autenticación ni TLS. Publica el puerto solo en redes confiables o detrás de un proxy.
+
+---
+
+## Despliegue en Ubuntu
+
+El repositorio incluye `deploy/docker-compose.yml` (referencia) y un paquete `.deb` para Ubuntu 20.04 en `installer/`, que se genera con `installer/build-installer.py`. El paquete instala en `/srv/atdevice-api`:
+
+- `docker-compose.yml` y `.env` (copias de `deploy/`; nunca sobrescribe archivos existentes; `.env` con permisos `600`).
+- La unidad systemd `atdevice-api.service`, que ejecuta `docker compose up`. Se reinicia si falla, salvo que salga con código 1: eso indica un esquema de base distinto al esperado, pero también errores de Compose como una imagen que no se descarga o un `.env` que falta (revisa `journalctl`). Permite 5 arranques por cada 60 s, y los códigos 130 y 143 cuentan como parada normal. En la primera instalación queda habilitada pero no iniciada.
+
+La imagen que usa el compose es `atentuschile/atdevice-api` (`ATDEVICE_API_TAG`, `1.0.0` por defecto). Ese nombre de registro es un supuesto que hay que confirmar.
+
+Primer despliegue, en resumen (el detalle está en [installer/ubuntu/README.md](installer/ubuntu/README.md)):
+
+1. Instala antes `docker-ce` y `docker-compose-plugin`. El `.deb` solo depende de `debconf`.
+2. Instala el paquete: `sudo dpkg -i atdevice-api_1.0.0_all.deb`.
+3. Edita `/srv/atdevice-api/.env` con los datos de la base de datos.
+4. Respalda la base con `pg_dump`, revisa el estado con `docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status` y aplica `migrate up` (o `migrate baseline` seguido de `migrate up` en bases antiguas).
+5. Inicia el servicio: `sudo systemctl start atdevice-api`.
+
+Los logs están en el journal: `journalctl -u atdevice-api -f`. Al actualizar el paquete el servicio no se reinicia: queda detenido, y `postinst` actualiza `ATDEVICE_API_TAG` en `/srv/atdevice-api/.env` a la versión de imagen del paquete. El procedimiento (descargar la imagen, aplicar migraciones con respaldo previo si hacen falta y reiniciar el servicio) está en la sección «Actualización» de [installer/ubuntu/README.md](installer/ubuntu/README.md).
 
 ---
 
@@ -285,16 +391,16 @@ Los errores internos de `http.Server` también pasan por `slog`, en nivel `ERROR
 
 #### Errores de arranque
 
-Los errores fatales de arranque se registran en nivel `ERROR` con el mismo mensaje en español, y el proceso termina con código 1. Si hay varios errores de configuración, se unen con `; ` en una sola línea.
+Los errores fatales de `serve` y de los subcomandos `migrate` se registran en una sola línea `ERROR` con el mensaje en español, y el proceso termina con código 1 o 2 (ver [Códigos de salida](#códigos-de-salida)). Si hay varios errores de configuración, se unen con `; ` en esa línea.
 
-Los errores de configuración se registran antes de crear el logger, así que usan el manejador por defecto de `slog`: formato estándar de `log`, sin `LOG_FORMAT` ni `LOG_LEVEL`. Los errores posteriores (crear el pool, ping, escuchar) sí siguen `LOG_FORMAT`.
+Los errores de configuración se registran antes de crear el logger, así que usan el manejador por defecto de `slog`: formato estándar de `log`, sin `LOG_FORMAT` ni `LOG_LEVEL`. Esto también aplica a `migrate`, que no configura el logger. Los errores de `serve` posteriores a la configuración (crear el pool, ping, versión del esquema, escuchar) sí siguen `LOG_FORMAT`.
 ```text
 2026/11/25 15:09:14 ERROR Error crítico al leer la configuración de la API: faltan variables de entorno: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
 ```
 
 > **Advertencias**
 > - La línea `solicitud` solo tiene los atributos de la tabla; el cuerpo de la petición no se registra.
-> - Las llamadas a la base de datos no usan el contexto de la solicitud, así que un cliente que se desconecta no cancela la inserción. No hay timeouts ni apagado ordenado todavía.
+> - Las llamadas a la base de datos no usan el contexto de la solicitud, así que un cliente que se desconecta no cancela la inserción. El servidor sí tiene timeouts de lectura y escritura y apagado ordenado (ver [Servidor HTTP y apagado](#servidor-http-y-apagado)).
 
 ---
 
@@ -302,21 +408,34 @@ Los errores de configuración se registran antes de crear el logger, así que us
 
 ### Pruebas unitarias
 
-No requieren base de datos. Usan `httptest` y una base de datos falsa:
+No requieren base de datos. Usan `httptest`, una base de datos falsa y pruebas de las migraciones sin conexión:
 
 ```bash
+go vet ./...
+gofmt -l .
 go test ./...
 go test -race ./...
 go test -run TestHandleDevices ./internal/api/
 ```
 
-### Prueba de integración
+### Pruebas de integración
 
-Requiere PostgreSQL con `database.sql` ya aplicado y la variable `TEST_DATABASE_URL` con una URL `postgres://`. Si la variable no está definida, la prueba se omite. La prueba crea y elimina sus propias filas `itest-*`.
+#### API
+
+Requiere PostgreSQL con la base ya migrada a la versión `4` (`migrate up`) y la variable `TEST_DATABASE_URL` con una URL `postgres://`. Si la variable no está definida, la prueba se omite. La prueba crea y elimina sus propias filas `itest-*`.
 
 ```bash
 TEST_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/attelemetry?sslmode=disable' \
   go test -tags integration -run Integration ./internal/api/
+```
+
+#### Migraciones
+
+Requiere una base de datos **vacía y desechable** en `TEST_MIGRATE_DATABASE_URL`, sin parámetros `pool_*` en la URL. La prueba aplica todas las migraciones, comprueba el estado y el rechazo de `baseline`, y no limpia la base al terminar.
+
+```bash
+TEST_MIGRATE_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/atdevice_scratch?sslmode=disable' \
+  go test -tags integration -run Integration ./internal/migrate/
 ```
 
 ---

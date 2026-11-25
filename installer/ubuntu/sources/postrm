@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+case "$1" in
+    remove)
+        echo "Deteniendo servicio atdevice-api"
+        systemctl stop atdevice-api.service || true
+        echo "Deshabilitando servicio atdevice-api"
+        systemctl disable atdevice-api.service || true
+        echo "Reiniciando systemctl daemon"
+        systemctl daemon-reload || true
+        echo "Favor de realizar las siguientes operaciones manuales, utilizando usuario root."
+        echo "- rm /etc/systemd/system/atdevice-api.service"
+        echo "- rm -rf /srv/atdevice-api/"
+        ;;
+esac

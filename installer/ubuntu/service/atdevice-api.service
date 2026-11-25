@@ -1,0 +1,22 @@
+[Unit]
+Description=atdevice-api Daemon
+After=docker.service
+Requires=docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=2s
+RestartPreventExitStatus=1
+SuccessExitStatus=130 143
+StandardOutput=journal
+StandardError=journal
+WorkingDirectory=/srv/atdevice-api
+ExecStart=/usr/bin/docker compose -f /srv/atdevice-api/docker-compose.yml up --abort-on-container-exit --exit-code-from api
+ExecStop=/usr/bin/docker compose -f /srv/atdevice-api/docker-compose.yml stop
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+# Reference compose file for atdevice-api. The Ubuntu package installs a copy
+# at /srv/atdevice-api/docker-compose.yml (never overwriting an existing one).
+#
+# Secrets stay out of this file: put them in .env next to it (see
+# .env.docker.example).
+#
+# Migrations are NOT run automatically: they can stall ingestion and need a
+# pg_dump backup first. Run them by hand as a one-off, before starting:
+#   docker compose -f docker-compose.yml run --rm api migrate status
+#   docker compose -f docker-compose.yml run --rm api migrate up
+#   docker compose -f docker-compose.yml run --rm api migrate baseline
+# (baseline is only for databases created by the old psql scripts.) serve
+# refuses to start unless the database is at the latest migration version.
+#
+# No restart policy: systemd (atdevice-api.service) restarts the container.
+
+services:
+  api:
+    # Assumption: same registry organization as atrecovery.
+    image: atentuschile/atdevice-api:${ATDEVICE_API_TAG:-1.0.0}
+    env_file: .env
+    environment:
+      LOG_FORMAT: json
+      SERVER_PORT: "8080"
+    ports:
+      - "${ATDEVICE_API_PORT:-8080}:8080"
+    # Lets DB_HOST=host.docker.internal reach PostgreSQL on the Docker host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

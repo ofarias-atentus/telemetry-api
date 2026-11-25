@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Central ingestion API in Go (module `telemetry-api`) that stores device inventory and hardware telemetry (battery, temperature, voltage, CPU, RAM) from iOS and Android devices in PostgreSQL with TimescaleDB. The README calls the built binary `atdevice-api`.
 
-`main.go` (repo root, `package main`) is a thin entry point: `run()` loads `config.json`, creates the pgx pool, pings it, and serves `api.NewServer(pool).Routes()` with `http.ListenAndServe`. The rest is in `internal/`:
+`main.go` (repo root, `package main`) is a thin entry point: `run()` loads the configuration (`.env` plus environment variables), creates the pgx pool, pings it, and serves `api.NewServer(pool).Routes()` with `http.ListenAndServe`. The rest is in `internal/`:
 
-- `internal/config`: `Config` types, `Load(path)`, and `DatabaseConfig.BuildConnString()`.
+- `internal/config`: `Config` types, `Load(envFile string)` (reads the optional `.env` file with godotenv, then the environment, and reports all validation errors together), and `DatabaseConfig.BuildConnString()`. Tests use an unexported `fromEnv(lookup)` and `t.Setenv`.
 - `internal/api`: the `DB` interface (`Exec` and `CopyFrom`, which `*pgxpool.Pool` satisfies), `Server`/`NewServer`, and `Routes()`, which returns a dedicated `ServeMux`. Handlers are in `devices.go` and `telemetry.go`, models in `models.go`.
 
-It uses stdlib `net/http` with no router. The only direct dependency is `github.com/jackc/pgx/v5` (`pgxpool`, `CopyFrom`).
+It uses stdlib `net/http` with no router. The direct dependencies are `github.com/jackc/pgx/v5` (`pgxpool`, `CopyFrom`) and `github.com/joho/godotenv` (`.env` loading).
 
 `main.go` must stay at the repo root as `package main` and compile on its own, because the build is `go build -o atdevice-api main.go`. Put new code in `internal/` packages, not in sibling files at the root, or that build breaks. The `DB` interface is the test seam: handler tests inject a fake instead of a real pool.
 
@@ -27,8 +27,9 @@ The startup error strings in `run()` (`main.go`) are capitalized Spanish on purp
 
 ## Runtime behavior
 
-- `config.json` is read from the current working directory, so run the binary from the repo root. It is tracked in git and holds real database credentials, so do not echo them in output or copy them elsewhere. Its `database.host` is `0.0.0.0`.
-- Startup builds a pgx pool from `config.json`, pings the database, and exits if the ping fails. It then listens on `:<server.port>` (all interfaces, default 8080). There is no auth and no TLS.
+- Configuration comes from environment variables, optionally loaded from `.env` in the current working directory, so run the binary from the repo root. `.env` holds real database credentials and is not tracked by git. Don't echo, read out, or copy its contents. Variables already set in the process environment win over `.env`; an exported empty value counts as unset. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`. Defaults: `SERVER_PORT` 8080, `DB_PORT` 5432, `DB_SSLMODE` disable, `DB_MAX_CONNS` 25, `DB_MIN_CONNS` 5. Validation: ports 1–65535, `DB_MAX_CONNS` >= 1, and 0 <= `DB_MIN_CONNS` <= `DB_MAX_CONNS`. `.env.example` is the committed template.
+- The old `config.json` is still in git history with real database credentials, so the DB password should be rotated. Don't put the password in docs or output.
+- Startup loads the config, builds a pgx pool, pings the database, and exits if the config is invalid (all errors are reported together) or the ping fails. It then listens on `:<SERVER_PORT>` (all interfaces, default 8080). There is no auth and no TLS.
 - `POST /api/v1/devices` takes a JSON array of `DeviceInventory`. `host_name`, `host_ip`, and `host_location` stay top-level in both formats. Each device is one SQL statement (a CTE upserts `hosts`, then `devices`, `ON CONFLICT ... DO UPDATE`), with no transaction across devices. Row errors are only logged; the handler still returns `200 {"status":"success"}`. `platform` is never updated. `host_ip` is overwritten by the latest device, and `host_location` is kept when a device sends nil or empty. Stored `model` and `battery_design_cap` are preserved when already present.
 - Two device formats, which can be mixed. Legacy: `alias_name`, `model`, `os_version`, `battery_design_cap` at top level; unsent ones are stored as `""` or 0. New: `attributes` object with any keys; legacy fields that were sent are merged in only when their key is absent, so `attributes` wins. A non-object `attributes` gets 400. The logic is `DeviceInventory.attributes()` and `hostLocation()` in `internal/api/models.go`.
 - `country` accepts an ISO code or a name/alias from `countries`, trimmed and case-insensitive (`'Chile'`, `' cl '`, `'Perú'`, `'peru'` all resolve). `handleDevices` lowercases it in Go before the SQL, because Postgres `lower()` only folds ASCII under a C locale. The SQL resolves it with a scalar subquery. An unknown value makes that device's statement fail with a NOT NULL error: the device and its host upsert are skipped and logged as `[ERROR] Upsert falló...`, and the response is still 200. An existing device sent with an unknown country is not updated.
@@ -51,8 +52,9 @@ The startup error strings in `run()` (`main.go`) are capitalized Spanish on purp
 
 ```bash
 go mod download
+cp .env.example .env               # then edit; .env is gitignored
 go build -o atdevice-api main.go   # or: go run main.go
-./atdevice-api                     # from the repo root
+./atdevice-api                     # from the repo root, reads .env
 psql -U <user> -h <host> -d attelemetry -f database.sql
 psql -U <user> -h <host> -d attelemetry -f migrations/001_device_telemetry_jsonb.sql   # existing DBs with the old columns only
 psql -U <user> -h <host> -d attelemetry -f migrations/002_devices_attributes_jsonb.sql  # existing DBs with the old devices columns only

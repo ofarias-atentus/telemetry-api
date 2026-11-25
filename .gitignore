@@ -3,3 +3,6 @@ atdevice-api
 telemetry-api
 *.exe
 *.out
+
+# Configuración local con credenciales
+.env

@@ -23,11 +23,11 @@ API ingestora central escrita en **Go** para el registro de inventario y recolec
 
 ```text
 telemetry-api/
-├── config.json      # Configuración del servidor HTTP y credenciales de base de datos
+├── .env.example     # Plantilla de variables de entorno (copiar a .env)
 ├── database.sql     # Script DDL para inicializar tablas, hypertable e índices
 ├── go.mod           # Definición del módulo y dependencias Go
 ├── go.sum           # Checksums de dependencias
-├── main.go          # Punto de entrada: carga la configuración, conecta a PostgreSQL y arranca el servidor
+├── main.go          # Punto de entrada: carga la configuración (.env y entorno), conecta a PostgreSQL y arranca el servidor
 ├── internal/
 │   ├── api/                     # Servidor HTTP: handlers, modelos y pruebas
 │   │   ├── server.go            # Interfaz DB, Server, NewServer y Routes
@@ -41,7 +41,7 @@ telemetry-api/
 │   │   ├── server_test.go       # Pruebas de enrutamiento
 │   │   ├── schema_test.go       # Pruebas del seed de countries y de database.sql / migraciones
 │   │   └── integration_test.go  # Prueba de integración (tag integration)
-│   └── config/                  # Carga y decodificación de config.json
+│   └── config/                  # Carga y validación de la configuración desde .env y variables de entorno
 │       ├── config.go
 │       └── config_test.go
 ├── migrations/
@@ -138,27 +138,57 @@ psql -U <usuario> -h <host> -d attelemetry -f migrations/003_countries.sql
 
 ---
 
-### 2. Configurar `config.json`
+### 2. Configurar variables de entorno
 
-Edita el archivo `config.json` en la raíz del proyecto con los parámetros del servidor y de conexión a PostgreSQL:
+La API lee su configuración de variables de entorno. Si existe un archivo `.env` en el directorio de trabajo actual, también se carga. Crea el archivo a partir de la plantilla y ajústalo:
 
-```json
-{
-  "server": {
-    "port": 8080
-  },
-  "database": {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "user": "postgres",
-    "password": "tu_password",
-    "dbname": "attelemetry",
-    "sslmode": "disable",
-    "max_conns": 25,
-    "min_conns": 5
-  }
-}
+```bash
+cp .env.example .env
+chmod 600 .env
 ```
+
+```dotenv
+SERVER_PORT=8080
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=tu_password
+DB_NAME=attelemetry
+DB_SSLMODE=disable
+DB_MAX_CONNS=25
+DB_MIN_CONNS=5
+```
+
+| Variable | Obligatoria | Por defecto | Descripción |
+|---|---|---|---|
+| `SERVER_PORT` | No | `8080` | Puerto HTTP, de 1 a 65535. |
+| `DB_HOST` | Sí | — | Host de PostgreSQL. Se admiten IPv6 entre corchetes, como `[::1]`. |
+| `DB_PORT` | No | `5432` | Puerto de PostgreSQL, de 1 a 65535. |
+| `DB_USER` | Sí | — | Usuario de PostgreSQL. |
+| `DB_PASSWORD` | Sí | — | Contraseña del usuario. No se recortan sus espacios. |
+| `DB_NAME` | Sí | — | Nombre de la base de datos. |
+| `DB_SSLMODE` | No | `disable` | Modo SSL de la conexión a PostgreSQL. |
+| `DB_MAX_CONNS` | No | `25` | Máximo de conexiones del pool. Debe ser al menos 1. |
+| `DB_MIN_CONNS` | No | `5` | Mínimo de conexiones del pool. Debe estar entre 0 y `DB_MAX_CONNS`. |
+
+#### Reglas de lectura
+
+- Los valores se recortan de espacios al inicio y al final, excepto `DB_PASSWORD`.
+- Las variables ya definidas en el entorno del proceso tienen prioridad sobre `.env`. Una variable exportada con valor vacío cuenta como no definida: no se usa su valor del `.env` y puede provocar el error de variables faltantes.
+- Si un valor contiene `$`, `#` o espacios, ponlo entre comillas simples. godotenv expande `$VAR` en valores sin comillas o con comillas dobles, y `#` inicia un comentario en valores sin comillas:
+  ```dotenv
+  DB_PASSWORD='mi $ecreto #1'
+  ```
+- El usuario y la contraseña se escapan al construir la cadena de conexión, así que admiten caracteres especiales.
+- Si falta una variable obligatoria o un valor no es válido, la API muestra todos los errores juntos al arrancar y termina. Por ejemplo:
+  ```text
+  Error crítico al leer la configuración de la API: faltan variables de entorno: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+  ```
+- Si no existe `.env`, no es un error siempre que las variables estén definidas en el entorno.
+
+> **Advertencias**
+> - `.env` contiene credenciales reales. Está ignorado por git, no se versiona y no debe copiarse ni compartirse. Se recomienda permiso `600`.
+> - El antiguo `config.json` sigue en el historial de git con credenciales reales. Cambia la contraseña de la base de datos.
 
 ---
 
@@ -181,7 +211,7 @@ Edita el archivo `config.json` en la raíz del proyecto con los parámetros del 
    ```bash
    go build -o atdevice-api main.go
    ```
-2. Ejecutar el binario (asegúrate de que `config.json` esté en el directorio de trabajo actual):
+2. Ejecutar el binario (asegúrate de que `.env` esté en el directorio de trabajo actual, o de que las variables estén definidas en el entorno):
    ```bash
    ./atdevice-api
    ```

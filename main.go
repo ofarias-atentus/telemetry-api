@@ -19,10 +19,10 @@ func main() {
 }
 
 func run() error {
-	// 1. Cargar archivo de configuración
-	cfg, err := config.Load("config.json")
+	// 1. Cargar configuración
+	cfg, err := config.Load(".env")
 	if err != nil {
-		return fmt.Errorf("Error crítico al leer config.json de la API: %w", err)
+		return fmt.Errorf("Error crítico al leer la configuración de la API: %w", err)
 	}
 
 	// 2. Construir DSN e inicializar Pool de conexiones

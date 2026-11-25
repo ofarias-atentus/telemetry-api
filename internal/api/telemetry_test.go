@@ -97,7 +97,7 @@ func TestHandleTelemetry(t *testing.T) {
 
 			req := httptest.NewRequest(tt.method, "/api/v1/telemetry", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			NewServer(db).Routes().ServeHTTP(rec, req)
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantCode)
@@ -133,7 +133,7 @@ func TestHandleTelemetryCopyArgs(t *testing.T) {
 	db := &fakeDB{copyN: 2}
 	before := time.Now()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry", strings.NewReader(body))
-	NewServer(db).Routes().ServeHTTP(httptest.NewRecorder(), req)
+	NewServer(db, nil).Routes().ServeHTTP(httptest.NewRecorder(), req)
 
 	if len(db.copyCalls) != 1 {
 		t.Fatalf("CopyFrom calls = %d, want 1", len(db.copyCalls))
@@ -199,7 +199,7 @@ func TestHandleTelemetryDataFormat(t *testing.T) {
 	db := &fakeDB{copyN: 1}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry", strings.NewReader(body))
-	NewServer(db).Routes().ServeHTTP(rec, req)
+	NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -301,7 +301,7 @@ func TestHandleTelemetryPayloads(t *testing.T) {
 			db := &fakeDB{copyN: 1}
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry", strings.NewReader(tt.body))
-			NewServer(db).Routes().ServeHTTP(rec, req)
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)
@@ -348,7 +348,7 @@ func TestHandleTelemetryDataNotObject(t *testing.T) {
 			db := &fakeDB{}
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry", strings.NewReader(tt.body))
-			NewServer(db).Routes().ServeHTTP(rec, req)
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)

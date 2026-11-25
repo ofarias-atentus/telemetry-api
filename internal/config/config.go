@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"math"
 	"net"
 	"net/url"
@@ -21,6 +22,13 @@ const maxPort = 65535
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
+	Log      LogConfig
+}
+
+// LogConfig contiene el nivel y el formato de los logs.
+type LogConfig struct {
+	Level  slog.Level
+	Format string
 }
 
 // ServerConfig contiene los parámetros del servidor HTTP.
@@ -99,8 +107,33 @@ func fromEnv(lookup func(string) (string, bool)) (*Config, error) {
 		errs = append(errs, fmt.Errorf("DB_MIN_CONNS (%d) no puede ser mayor que DB_MAX_CONNS (%d)", minConns, maxConns))
 	}
 
+	logLevel := slog.LevelInfo
+	switch lv := strings.ToLower(get("LOG_LEVEL")); lv {
+	case "":
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "info":
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		errs = append(errs, fmt.Errorf("LOG_LEVEL inválido: %q (debug, info, warn, error)", get("LOG_LEVEL")))
+	}
+
+	logFormat := strings.ToLower(get("LOG_FORMAT"))
+	switch logFormat {
+	case "":
+		logFormat = "text"
+	case "text", "json":
+	default:
+		errs = append(errs, fmt.Errorf("LOG_FORMAT inválido: %q (text, json)", get("LOG_FORMAT")))
+		logFormat = "text"
+	}
+
 	cfg := &Config{
 		Server: ServerConfig{Port: serverPort},
+		Log:    LogConfig{Level: logLevel, Format: logFormat},
 		Database: DatabaseConfig{
 			Host:     required("DB_HOST"),
 			Port:     dbPort,

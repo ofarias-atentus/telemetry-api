@@ -26,7 +26,7 @@ func TestRoutes(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
-			NewServer(&fakeDB{}).Routes().ServeHTTP(rec, req)
+			NewServer(&fakeDB{}, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Errorf("GET %s status = %d, want %d", tt.path, rec.Code, tt.wantCode)

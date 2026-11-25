@@ -73,7 +73,7 @@ func TestIntegrationIngest(t *testing.T) {
 		}
 	})
 
-	ts := httptest.NewServer(NewServer(pool).Routes())
+	ts := httptest.NewServer(NewServer(pool, nil).Routes())
 	defer ts.Close()
 
 	post := func(path, body string) (int, string) {

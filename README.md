@@ -9,6 +9,7 @@ API ingestora central escrita en **Go** para el registro de inventario y recolec
 - **Inventario de Dispositivos (`Upsert`)**: Registro y actualización continua del estado, versión de sistema operativo y ubicación física/lógica (host, IP, rack, país) de cada dispositivo.
 - **Ingesta Masiva de Telemetría (`CopyFrom`)**: Inserción por lotes de alta velocidad utilizando el protocolo binario `COPY` de PostgreSQL a través de `pgx/v5`.
 - **Series Temporales con TimescaleDB**: Particionamiento automático por tiempo (`hypertable`) e indexación compuesta por dispositivo y marca temporal descendente.
+- **Logs Estructurados (`log/slog`)**: Una línea por solicitud con `request_id`, método, ruta, estado y duración, y un `X-Request-ID` en cada respuesta para seguir una petición en los logs.
 
 ---
 
@@ -27,10 +28,12 @@ telemetry-api/
 ├── database.sql     # Script DDL para inicializar tablas, hypertable e índices
 ├── go.mod           # Definición del módulo y dependencias Go
 ├── go.sum           # Checksums de dependencias
-├── main.go          # Punto de entrada: carga la configuración (.env y entorno), conecta a PostgreSQL y arranca el servidor
+├── main.go          # Punto de entrada: carga la configuración (.env y entorno), crea el logger, conecta a PostgreSQL y arranca el servidor
 ├── internal/
-│   ├── api/                     # Servidor HTTP: handlers, modelos y pruebas
-│   │   ├── server.go            # Interfaz DB, Server, NewServer y Routes
+│   ├── api/                     # Servidor HTTP: handlers, modelos, middleware de logs y pruebas
+│   │   ├── server.go            # Interfaz DB, Server, NewServer, Routes y Handler
+│   │   ├── middleware.go        # Registro de solicitudes, X-Request-ID y recuperación de panics
+│   │   ├── middleware_test.go   # Pruebas del middleware
 │   │   ├── devices.go           # Handler de /api/v1/devices y consulta de upsert
 │   │   ├── telemetry.go         # Handler de /api/v1/telemetry
 │   │   ├── models.go            # Structs DeviceInventory y TelemetryData, y payload() para la columna data
@@ -41,9 +44,12 @@ telemetry-api/
 │   │   ├── server_test.go       # Pruebas de enrutamiento
 │   │   ├── schema_test.go       # Pruebas del seed de countries y de database.sql / migraciones
 │   │   └── integration_test.go  # Prueba de integración (tag integration)
-│   └── config/                  # Carga y validación de la configuración desde .env y variables de entorno
-│       ├── config.go
-│       └── config_test.go
+│   ├── config/                  # Carga y validación de la configuración desde .env y variables de entorno
+│   │   ├── config.go
+│   │   └── config_test.go
+│   └── logging/                 # Construcción del logger slog (texto o JSON, nivel)
+│       ├── logging.go
+│       └── logging_test.go
 ├── migrations/
 │   ├── 001_device_telemetry_jsonb.sql  # Mueve las métricas antiguas a la columna data
 │   ├── 002_devices_attributes_jsonb.sql  # Crea hosts y mueve los campos de devices a attributes
@@ -157,6 +163,8 @@ DB_NAME=attelemetry
 DB_SSLMODE=disable
 DB_MAX_CONNS=25
 DB_MIN_CONNS=5
+LOG_LEVEL=info
+LOG_FORMAT=text
 ```
 
 | Variable | Obligatoria | Por defecto | Descripción |
@@ -170,20 +178,20 @@ DB_MIN_CONNS=5
 | `DB_SSLMODE` | No | `disable` | Modo SSL de la conexión a PostgreSQL. |
 | `DB_MAX_CONNS` | No | `25` | Máximo de conexiones del pool. Debe ser al menos 1. |
 | `DB_MIN_CONNS` | No | `5` | Mínimo de conexiones del pool. Debe estar entre 0 y `DB_MAX_CONNS`. |
+| `LOG_LEVEL` | No | `info` | Nivel mínimo de log: `debug`, `info`, `warn` o `error`. No distingue mayúsculas. |
+| `LOG_FORMAT` | No | `text` | Formato de los logs: `text` (líneas `clave=valor`) o `json`. No distingue mayúsculas. |
 
 #### Reglas de lectura
 
 - Los valores se recortan de espacios al inicio y al final, excepto `DB_PASSWORD`.
+- Un valor no válido en `LOG_LEVEL` o `LOG_FORMAT` es un error de configuración, igual que los demás: se muestra junto con el resto al arrancar.
 - Las variables ya definidas en el entorno del proceso tienen prioridad sobre `.env`. Una variable exportada con valor vacío cuenta como no definida: no se usa su valor del `.env` y puede provocar el error de variables faltantes.
 - Si un valor contiene `$`, `#` o espacios, ponlo entre comillas simples. godotenv expande `$VAR` en valores sin comillas o con comillas dobles, y `#` inicia un comentario en valores sin comillas:
   ```dotenv
   DB_PASSWORD='mi $ecreto #1'
   ```
 - El usuario y la contraseña se escapan al construir la cadena de conexión, así que admiten caracteres especiales.
-- Si falta una variable obligatoria o un valor no es válido, la API muestra todos los errores juntos al arrancar y termina. Por ejemplo:
-  ```text
-  Error crítico al leer la configuración de la API: faltan variables de entorno: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
-  ```
+- Si falta una variable obligatoria o un valor no es válido, la API registra todos los errores juntos en una línea `ERROR` al arrancar y termina con código 1. Esa línea no usa `LOG_FORMAT` ni `LOG_LEVEL` (ver [Errores de arranque](#errores-de-arranque)).
 - Si no existe `.env`, no es un error siempre que las variables estén definidas en el entorno.
 
 > **Advertencias**
@@ -216,10 +224,77 @@ DB_MIN_CONNS=5
    ./atdevice-api
    ```
 
-Al iniciar correctamente, verás en consola:
+Al iniciar correctamente, verás en consola (stderr):
 ```text
-API Ingestora central escuchando en el puerto :8080...
+time=2026-11-25T15:06:20.102-03:00 level=INFO msg="API Ingestora central escuchando" addr=:8080
 ```
+
+---
+
+## Logs
+
+Los logs usan `log/slog` de la biblioteca estándar y salen por stderr. El formato y el nivel se eligen con `LOG_FORMAT` y `LOG_LEVEL`.
+
+Cada solicitud HTTP genera una línea `msg=solicitud` con estos atributos:
+
+| Atributo | Descripción |
+|---|---|
+| `request_id` | Identificador de la solicitud (ver más abajo). |
+| `method` | Método HTTP. |
+| `path` | Ruta de la solicitud. |
+| `status` | Código de respuesta. |
+| `bytes` | Bytes enviados en el cuerpo de la respuesta. |
+| `duration_ms` | Duración de la solicitud en milisegundos. |
+| `remote_addr` | Dirección remota del cliente. |
+
+El nivel depende del código de respuesta: `INFO` para `status` menor que 400, `WARN` para 4xx y `ERROR` para 5xx.
+
+Ejemplo en formato `text` (`LOG_FORMAT=text`):
+```text
+time=2026-11-25T15:06:21.617-03:00 level=INFO msg=solicitud request_id=bcc29bd74cd484ca method=POST path=/api/v1/telemetry status=200 bytes=0 duration_ms=0.187 remote_addr=[::1]:56341
+```
+
+Ejemplo en formato `json` (`LOG_FORMAT=json`):
+```json
+{"time":"2026-11-25T15:06:21.617-03:00","level":"INFO","msg":"solicitud","request_id":"bcc29bd74cd484ca","method":"POST","path":"/api/v1/telemetry","status":200,"bytes":0,"duration_ms":0.187,"remote_addr":"[::1]:56341"}
+```
+
+#### Identificador de solicitud
+
+- Si la petición trae la cabecera `X-Request-ID` con 1 a 64 caracteres del conjunto `[A-Za-z0-9._-]`, se conserva. En otro caso, el servidor genera un identificador de 16 caracteres hexadecimales.
+- El identificador se devuelve en la cabecera `X-Request-ID` de la respuesta y aparece como `request_id` en todas las líneas de esa solicitud, también en los errores del handler.
+
+#### Errores del handler
+
+- Un dispositivo que falla en `POST /api/v1/devices` se registra como `upsert falló`, con los atributos `device_id` y `err`.
+- Una inserción masiva fallida en `POST /api/v1/telemetry` se registra como `inserción masiva CopyFrom fallida`, con los atributos `records` y `err`.
+
+Ejemplo de un lote de telemetría rechazado por una llave foránea. La última línea es el registro de la solicitud con el mismo `request_id`:
+```text
+time=2026-11-25T15:06:21.640-03:00 level=ERROR msg="inserción masiva CopyFrom fallida" request_id=3e0ab5a22f7c3f69 records=1 err="ERROR: insert or update on table \"device_telemetry\" violates foreign key constraint ..."
+time=2026-11-25T15:06:21.641-03:00 level=ERROR msg=solicitud request_id=3e0ab5a22f7c3f69 method=POST path=/api/v1/telemetry status=500 bytes=0 duration_ms=12.904 remote_addr=[::1]:56355
+```
+
+#### Panics
+
+Si un handler entra en pánico, se registra la línea `solicitud` en nivel `ERROR` con `status=500` y un atributo `panic`, aunque el handler ya hubiera enviado cabeceras. Después, `net/http` maneja el pánico como antes. Un `http.ErrAbortHandler` también se registra en nivel `ERROR` con `status=500`, pero sin el atributo `panic`.
+
+#### Errores del servidor HTTP
+
+Los errores internos de `http.Server` también pasan por `slog`, en nivel `ERROR`.
+
+#### Errores de arranque
+
+Los errores fatales de arranque se registran en nivel `ERROR` con el mismo mensaje en español, y el proceso termina con código 1. Si hay varios errores de configuración, se unen con `; ` en una sola línea.
+
+Los errores de configuración se registran antes de crear el logger, así que usan el manejador por defecto de `slog`: formato estándar de `log`, sin `LOG_FORMAT` ni `LOG_LEVEL`. Los errores posteriores (crear el pool, ping, escuchar) sí siguen `LOG_FORMAT`.
+```text
+2026/11/25 15:09:14 ERROR Error crítico al leer la configuración de la API: faltan variables de entorno: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+```
+
+> **Advertencias**
+> - La línea `solicitud` solo tiene los atributos de la tabla; el cuerpo de la petición no se registra.
+> - Las llamadas a la base de datos no usan el contexto de la solicitud, así que un cliente que se desconecta no cancela la inserción. No hay timeouts ni apagado ordenado todavía.
 
 ---
 
@@ -324,7 +399,7 @@ Los atributos van en el nivel superior del elemento y no se envía `attributes` 
 | `Perú`, `peru`, `PERÚ` | `PE` |
 | `usa` | `US` |
 
-- Un valor desconocido (por ejemplo `Atlantis`) hace fallar la sentencia de ese dispositivo con un error de `NOT NULL`. Como es una sola sentencia, también se revierte el upsert de su host. El error se registra como `[ERROR] Upsert falló para dispositivo ...` y la respuesta sigue siendo `200`.
+- Un valor desconocido (por ejemplo `Atlantis`) hace fallar la sentencia de ese dispositivo con un error de `NOT NULL`. Como es una sola sentencia, también se revierte el upsert de su host. El error se registra en nivel `ERROR` como `upsert falló`, con `device_id` y `err`, y la respuesta sigue siendo `200`.
 - Un dispositivo ya registrado que se envía con un país desconocido no se actualiza.
 - Go convierte el valor a minúsculas antes de enviarlo a la base de datos, porque `lower()` de PostgreSQL solo pliega ASCII en bases con locale `C`.
 
@@ -436,7 +511,7 @@ Las métricas van en el nivel superior del elemento y no se envía `data` (o se 
 - **`200 OK`**: Si se envía un arreglo vacío `[]`.
 - **`400 Bad Request`**: JSON mal formado o `data` que no es un objeto.
 - **`405 Method Not Allowed`**: Método HTTP distinto de `POST`.
-- **`500 Internal Server Error`**: Error en la inserción masiva (por ejemplo, violación de llave foránea o pérdida de conexión con la base de datos).
+- **`500 Internal Server Error`**: Error en la inserción masiva (por ejemplo, violación de llave foránea o pérdida de conexión con la base de datos). Se registra como `inserción masiva CopyFrom fallida`.
 
 #### Ejemplo con `curl`
 

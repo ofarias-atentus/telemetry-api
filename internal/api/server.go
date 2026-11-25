@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -23,12 +24,17 @@ type DB interface {
 
 // Server atiende las peticiones HTTP usando db para persistir los datos.
 type Server struct {
-	db DB
+	db     DB
+	logger *slog.Logger
 }
 
-// NewServer crea un Server que persiste en db.
-func NewServer(db DB) *Server {
-	return &Server{db: db}
+// NewServer crea un Server que persiste en db y registra en logger.
+// Si logger es nil usa slog.Default().
+func NewServer(db DB, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{db: db, logger: logger}
 }
 
 // Routes devuelve un mux con los endpoints de la API registrados.

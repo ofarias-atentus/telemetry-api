@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
@@ -46,7 +45,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		}),
 	)
 	if err != nil {
-		log.Printf("[ERROR] Inserción Masiva CopyFrom fallida: %v", err)
+		s.loggerFrom(r.Context()).Error("inserción masiva CopyFrom fallida", "records", len(batch), "err", err)
 		http.Error(w, "Error guardando datos", http.StatusInternalServerError)
 		return
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 )
@@ -68,7 +67,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			d.attributes(),
 		)
 		if err != nil {
-			log.Printf("[ERROR] Upsert falló para dispositivo %s: %v", d.DeviceID, err)
+			s.loggerFrom(r.Context()).Error("upsert falló", "device_id", d.DeviceID, "err", err)
 		}
 	}
 

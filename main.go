@@ -3,18 +3,22 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"telemetry-api/internal/api"
 	"telemetry-api/internal/config"
+	"telemetry-api/internal/logging"
 )
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error(strings.ReplaceAll(err.Error(), "\n", "; "))
+		os.Exit(1)
 	}
 }
 
@@ -24,6 +28,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("Error crítico al leer la configuración de la API: %w", err)
 	}
+
+	logger := logging.New(os.Stderr, cfg.Log)
+	slog.SetDefault(logger)
 
 	// 2. Construir DSN e inicializar Pool de conexiones
 	pool, err := pgxpool.New(context.Background(), cfg.Database.BuildConnString())
@@ -38,9 +45,12 @@ func run() error {
 	}
 
 	// 3. Registrar Endpoints
-	mux := api.NewServer(pool).Routes()
-
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	log.Printf("API Ingestora central escuchando en el puerto %s...", addr)
-	return http.ListenAndServe(addr, mux)
+	srv := &http.Server{
+		Addr:     addr,
+		Handler:  api.NewServer(pool, logger).Handler(),
+		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
+	logger.Info("API Ingestora central escuchando", "addr", addr)
+	return srv.ListenAndServe()
 }

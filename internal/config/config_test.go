@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,6 +52,8 @@ func TestFromEnv(t *testing.T) {
 				"DB_SSLMODE":   "require",
 				"DB_MAX_CONNS": "10",
 				"DB_MIN_CONNS": "2",
+				"LOG_LEVEL":    "debug",
+				"LOG_FORMAT":   "json",
 			}),
 			want: Config{
 				Server: ServerConfig{Port: 9090},
@@ -58,6 +61,7 @@ func TestFromEnv(t *testing.T) {
 					Host: "db.local", Port: 6543, User: "u", Password: "p", DBName: "d",
 					SSLMode: "require", MaxConns: 10, MinConns: 2,
 				},
+				Log: LogConfig{Level: slog.LevelDebug, Format: "json"},
 			},
 		},
 		{
@@ -69,6 +73,50 @@ func TestFromEnv(t *testing.T) {
 					Host: "db.local", Port: 5432, User: "u", Password: "p", DBName: "d",
 					SSLMode: "disable", MaxConns: 25, MinConns: 5,
 				},
+				Log: LogConfig{Level: slog.LevelInfo, Format: "text"},
+			},
+		},
+		{
+			name: "log level and format are case-insensitive and trimmed",
+			env:  with(map[string]string{"LOG_LEVEL": " WARN ", "LOG_FORMAT": " Json\t"}),
+			want: Config{
+				Server: ServerConfig{Port: 8080},
+				Database: DatabaseConfig{
+					Host: "db.local", Port: 5432, User: "u", Password: "p", DBName: "d",
+					SSLMode: "disable", MaxConns: 25, MinConns: 5,
+				},
+				Log: LogConfig{Level: slog.LevelWarn, Format: "json"},
+			},
+		},
+		{
+			name: "log error level",
+			env:  with(map[string]string{"LOG_LEVEL": "error"}),
+			want: Config{
+				Server: ServerConfig{Port: 8080},
+				Database: DatabaseConfig{
+					Host: "db.local", Port: 5432, User: "u", Password: "p", DBName: "d",
+					SSLMode: "disable", MaxConns: 25, MinConns: 5,
+				},
+				Log: LogConfig{Level: slog.LevelError, Format: "text"},
+			},
+		},
+		{
+			name:        "invalid log level",
+			env:         with(map[string]string{"LOG_LEVEL": "verbose"}),
+			wantErrPart: []string{`LOG_LEVEL inválido: "verbose" (debug, info, warn, error)`},
+		},
+		{
+			name:        "invalid log format",
+			env:         with(map[string]string{"LOG_FORMAT": "xml"}),
+			wantErrPart: []string{`LOG_FORMAT inválido: "xml" (text, json)`},
+		},
+		{
+			name: "invalid log values reported together",
+			env:  with(map[string]string{"LOG_LEVEL": "x", "LOG_FORMAT": "y", "DB_PORT": "0"}),
+			wantErrPart: []string{
+				"LOG_LEVEL inválido",
+				"LOG_FORMAT inválido",
+				"DB_PORT fuera de rango",
 			},
 		},
 		{
@@ -92,6 +140,8 @@ func TestFromEnv(t *testing.T) {
 				"SERVER_PORT": "",
 				"DB_PORT":     "",
 				"DB_SSLMODE":  "",
+				"LOG_LEVEL":   "",
+				"LOG_FORMAT":  "",
 			}),
 			want: Config{
 				Server: ServerConfig{Port: 8080},
@@ -99,6 +149,7 @@ func TestFromEnv(t *testing.T) {
 					Host: "db.local", Port: 5432, User: "u", Password: "p", DBName: "d",
 					SSLMode: "disable", MaxConns: 25, MinConns: 5,
 				},
+				Log: LogConfig{Level: slog.LevelInfo, Format: "text"},
 			},
 		},
 		{
@@ -125,6 +176,7 @@ func TestFromEnv(t *testing.T) {
 					Host: "db.local", Port: 6543, User: "u", Password: " p ", DBName: "d",
 					SSLMode: "require", MaxConns: 10, MinConns: 2,
 				},
+				Log: LogConfig{Level: slog.LevelInfo, Format: "text"},
 			},
 		},
 		{
@@ -210,6 +262,7 @@ func clearConfigEnv(t *testing.T) {
 	keys := []string{
 		"DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
 		"DB_SSLMODE", "SERVER_PORT", "DB_MAX_CONNS", "DB_MIN_CONNS",
+		"LOG_LEVEL", "LOG_FORMAT",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")

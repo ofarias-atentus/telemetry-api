@@ -93,7 +93,7 @@ func TestHandleDevices(t *testing.T) {
 
 			req := httptest.NewRequest(tt.method, "/api/v1/devices", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			NewServer(db).Routes().ServeHTTP(rec, req)
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantCode)
@@ -125,7 +125,7 @@ func TestHandleDevicesExecArgs(t *testing.T) {
 
 	db := &fakeDB{}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(twoDevicesBody))
-	NewServer(db).Routes().ServeHTTP(httptest.NewRecorder(), req)
+	NewServer(db, nil).Routes().ServeHTTP(httptest.NewRecorder(), req)
 
 	if len(db.execCalls) != len(want) {
 		t.Fatalf("Exec calls = %d, want %d", len(db.execCalls), len(want))
@@ -162,7 +162,7 @@ func TestHandleDevicesHostLocationArg(t *testing.T) {
 				`"country":"CL","status":"online"` + tt.location + `}]`
 			db := &fakeDB{}
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(body))
-			NewServer(db).Routes().ServeHTTP(httptest.NewRecorder(), req)
+			NewServer(db, nil).Routes().ServeHTTP(httptest.NewRecorder(), req)
 
 			if len(db.execCalls) != 1 {
 				t.Fatalf("Exec calls = %d, want 1", len(db.execCalls))
@@ -203,7 +203,7 @@ func TestHandleDevicesCountryArg(t *testing.T) {
 			)
 			db := &fakeDB{}
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(body))
-			NewServer(db).Routes().ServeHTTP(httptest.NewRecorder(), req)
+			NewServer(db, nil).Routes().ServeHTTP(httptest.NewRecorder(), req)
 
 			if len(db.execCalls) != 1 {
 				t.Fatalf("Exec calls = %d, want 1", len(db.execCalls))
@@ -373,7 +373,7 @@ func TestHandleDevicesAttributesFormats(t *testing.T) {
 			db := &fakeDB{}
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(tt.body))
-			NewServer(db).Routes().ServeHTTP(rec, req)
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)

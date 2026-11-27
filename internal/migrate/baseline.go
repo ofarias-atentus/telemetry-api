@@ -110,6 +110,9 @@ func Baseline(ctx context.Context, db *sql.DB) (int64, error) {
 			return 0, fmt.Errorf("no se pudo registrar la versión %d: %w", v, err)
 		}
 	}
+	if err := alignVersionsOwner(ctx, tx); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("no se pudo confirmar el baseline: %w", err)
 	}

@@ -62,10 +62,12 @@ telemetry-api/
 │   └── migrate/                 # Migraciones con goose, embebidas en el binario
 │       ├── migrate.go           # LatestVersion, Status, CheckVersion y lectura de la versión aplicada
 │       ├── up.go                # Up: bloqueo advisory, rechazo de bases sin historial y search_path
+│       ├── owner.go             # Dueño de goose_db_version, igual que el de devices
 │       ├── baseline.go          # Baseline: registra el historial de bases creadas con los scripts antiguos
 │       ├── migrate_test.go      # Pruebas sin base de datos
 │       ├── baseline_test.go     # Pruebas de la detección de versión
 │       ├── integration_test.go  # Prueba de integración de migraciones (tag integration)
+│       ├── integration_upgrade_test.go # Actualización desde datos antiguos (tag integration; borra el esquema public)
 │       └── migrations/          # Migraciones SQL de goose (embebidas con go:embed)
 │           ├── 00001_initial.sql               # Esquema original (TimescaleDB solo si está disponible)
 │           ├── 00002_device_telemetry_jsonb.sql # Mueve las métricas antiguas a la columna data
@@ -148,6 +150,18 @@ Comandos:
 - `migrate baseline` detecta la versión (1 a 4) a partir del catálogo y crea `goose_db_version` con las filas 0 a N, todo en una transacción. No cambia nada más. Se niega si ya existe el historial, si la base está vacía o si el esquema no coincide con ninguna versión conocida. Después ejecuta `migrate up` para aplicar lo que falte.
 - Las migraciones fijan `search_path` a `public`. Cada una corre en su propia transacción y son irreversibles: no tienen sección `Down`.
 - Las migraciones `00002` a `00004` fijan `lock_timeout` en 5 segundos, así que si no obtienen los bloqueos a tiempo fallan en lugar de esperar. `00001` no lo fija.
+- Antes de cambiar nada, `00002` a `00004` comprueban las precondiciones y se detienen con un mensaje en español, sin modificar nada, si:
+  - el rol que ejecuta no es el dueño de la tabla ni un superusuario;
+  - faltan columnas esperadas o ya existen las nuevas;
+  - hay vistas, vistas materializadas o reglas que dependen de las columnas que se eliminan o cambian de tipo.
+- Precondiciones adicionales:
+  - `00002`: `device_telemetry` es una hypertable con compresión activa, tiene chunks comprimidos o tiene continuous aggregates. El mensaje incluye los comandos para descomprimir.
+  - `00003`: hay dispositivos con `host_pc` NULL, o la fila más reciente de algún host tiene `host_pc` de más de 100, `host_ip` de más de 15 o `host_location` de más de 50 caracteres. Se listan los `device_id`.
+  - `00004`: hay valores de `devices.country` que no se pueden mapear. Se listan con su número de filas; corrígelos con `UPDATE devices SET country = ... WHERE country = ...` y vuelve a ejecutar.
+- Antes de cada paso destructivo, cada migración verifica su resultado: número de filas, número de claves por métrica o por atributo, y que todo dispositivo tenga host y país. Si algo no cuadra, hace rollback.
+- Propiedad: `hosts`, `countries` y `goose_db_version` quedan a nombre del dueño de `devices`. Si migra un superusuario como `postgres` sobre tablas de la aplicación, todo queda a nombre del rol de la aplicación. `migrate up` también corrige el dueño de `goose_db_version` en una base ya migrada. En una instalación nueva, las tablas quedan a nombre de quien la ejecutó.
+- Fallos: si una migración falla, su transacción se revierte por completo y las anteriores ya aplicadas se quedan. `migrate status` muestra la última versión aplicada. Tras corregir la causa, vuelve a ejecutar `migrate up`, que sale con código `2` ante un fallo de migración.
+- Verificado: la actualización se probó desde el binario de `main` en PostgreSQL 14, 16 y TimescaleDB (pg16), con unas 1 M de filas de telemetría (`migrate up` tardó unos 10 s). Los datos se compararon campo a campo. También se probaron los fallos (país sin mapear, vista dependiente, bloqueo tomado por la API antigua, que falla tras `lock_timeout` de 5 s, hypertable comprimida) y ejecuciones como superusuario.
 
 #### Actualizar una base existente
 
@@ -165,10 +179,52 @@ Comandos:
 > - `00002` reescribe todas las filas de `device_telemetry`: usa más disco y WAL, y en una hypertable grande puede tardar. Las métricas con valor `NULL` no se copian a `data`.
 > - `00003` y `00004` detienen la ingesta de telemetría hasta el `COMMIT`. `00004` cambia el tipo de `devices.country` con `ALTER TYPE`, que reescribe la tabla con bloqueo exclusivo.
 > - Revisa antes la compresión de TimescaleDB (descomprime los chunks comprimidos que toque la migración) y los continuous aggregates o vistas que dependan de las columnas o de `devices.country`: bloquean `DROP COLUMN` y `ALTER TYPE`.
-> - Si los dispositivos de un host discrepan en `host_ip` o `host_location`, `hosts` toma los valores del dispositivo actualizado más recientemente. Una ubicación vacía pasa a `NULL`.
+> - Si los dispositivos de un host discrepan en `host_ip` o `host_location`, `hosts` toma los valores del dispositivo con `updated_at` más reciente; a igualdad (o sin fecha), gana el `device_id` menor, así que el resultado es determinista. Una ubicación vacía pasa a `NULL` y un `host_ip` NULL pasa a cadena vacía.
 > - `00004` falla si algún `devices.country` existente no se puede mapear a un código por código, nombre o alias, y lista los valores (`Valores de country sin código ISO: ...`). Corrige o elimina esas filas y vuelve a ejecutar. En bases con locale `C`, `lower()` solo pliega ASCII: un valor con tildes y en mayúsculas (por ejemplo `PERÚ`) se listaría como sin mapear, así que corrígelo antes.
-> - Cada migración que falla hace rollback de sí misma; las anteriores ya aplicadas se quedan. Ejecutar de nuevo una migración ya aplicada no es posible porque el historial lo impide.
+> - Si una migración falla, se revierte por completo; las anteriores ya aplicadas se quedan. Corrige la causa y vuelve a ejecutar `migrate up`.
 > - Las instalaciones nuevas no necesitan `baseline`: `migrate up` sobre una base vacía crea el esquema completo.
+
+#### Actualizar desde la versión anterior (main)
+
+Procedimiento para un servidor que ejecuta la API de `main`, con la API detenida y en este orden. Los comandos de Docker Compose asumen la instalación del paquete en `/srv/atdevice-api`.
+
+1. Revisa los países. Cada valor debe ser un código ISO, un nombre o un alias de `countries`; si no, `00004` falla:
+   ```sql
+   SELECT country, count(*) FROM devices GROUP BY 1 ORDER BY 2 DESC;
+   ```
+2. Detén la API: `sudo systemctl stop atdevice-api`.
+3. Haz un respaldo en formato personalizado (añade `-h` y `-U` si hace falta):
+   ```bash
+   pg_dump -Fc -d attelemetry -f attelemetry_$(date +%F).dump
+   ```
+4. Instala la versión nueva (paquete o imagen) y descarga la imagen con `docker compose -f /srv/atdevice-api/docker-compose.yml pull`.
+5. Solo para bases creadas con los scripts antiguos, registra el historial una vez:
+   ```bash
+   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate baseline
+   ```
+6. Aplica las migraciones pendientes:
+   ```bash
+   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate up
+   ```
+7. Comprueba la versión. Debe salir con código `0`:
+   ```bash
+   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status
+   ```
+8. Inicia la API: `sudo systemctl start atdevice-api`.
+9. Verifica: `curl -i -X POST http://localhost:8080/api/v1/telemetry -H "Content-Type: application/json" -d '[]'` debe responder `200`, y `journalctl -u atdevice-api -f` no debe mostrar errores de arranque ni de `upsert`.
+10. Cuando lo hayas verificado, elimina la versión anterior (imagen o binario). Conserva el respaldo hasta confirmar que la API funciona.
+
+Si hay que volver atrás, restaura el respaldo. Las migraciones no tienen reversa:
+```bash
+dropdb attelemetry                                  # solo si vas a reemplazar la base
+createdb -O <owner> attelemetry
+# Solo con TimescaleDB:
+psql -d attelemetry -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" -c "SELECT timescaledb_pre_restore();"
+pg_restore -d attelemetry --no-owner --role=<owner> --exit-on-error attelemetry_AAAA-MM-DD.dump
+# Solo con TimescaleDB:
+psql -d attelemetry -c "SELECT timescaledb_post_restore();"
+```
+Sustituye `<owner>` por el rol dueño de `devices` y añade `-h` y `-U` si hace falta.
 
 ---
 
@@ -437,6 +493,8 @@ Requiere una base de datos **vacía y desechable** en `TEST_MIGRATE_DATABASE_URL
 TEST_MIGRATE_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/atdevice_scratch?sslmode=disable' \
   go test -tags integration -run Integration ./internal/migrate/
 ```
+
+`internal/migrate/integration_upgrade_test.go` (`TestMigrateUpgradeLegacyDataIntegration`) también usa `TEST_MIGRATE_DATABASE_URL`, pero ejecuta `DROP SCHEMA public CASCADE` antes de crear el esquema antiguo con datos. Úsala solo con una base desechable.
 
 ---
 

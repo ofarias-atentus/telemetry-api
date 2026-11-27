@@ -79,10 +79,15 @@ func migrateUp(ctx context.Context) error {
 	defer func() { _ = db.Close() }()
 
 	applied, err := migrate.Up(ctx, db)
+	if len(applied) > 0 {
+		printUp(os.Stdout, applied)
+	}
 	if err != nil {
 		return &exitError{code: exitCodeFor(err), err: err}
 	}
-	printUp(os.Stdout, applied)
+	if len(applied) == 0 {
+		printUp(os.Stdout, applied)
+	}
 	return nil
 }
 

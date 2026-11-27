@@ -102,6 +102,9 @@ func Up(ctx context.Context, db *sql.DB) ([]int64, error) {
 		}
 	}
 	sort.Slice(applied, func(i, j int) bool { return applied[i] < applied[j] })
+	if err := alignVersionsOwner(ctx, db); err != nil {
+		return applied, fmt.Errorf("migraciones aplicadas, pero %w; ejecuta migrate up como superusuario o como dueño de devices", err)
+	}
 	return applied, nil
 }
 

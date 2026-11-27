@@ -1,23 +1,84 @@
 -- +goose Up
 -- Crea la tabla countries (códigos ISO 3166-1 alfa-2) y convierte devices.country a CHAR(2) con FK a ella.
--- Falla si algún devices.country actual no se puede mapear a un código (por código, nombre o alias); lista los valores.
+-- Falla si algún devices.country actual no se puede mapear a un código (por código, nombre o alias);
+-- el mensaje lista cada valor con su número de filas y no se modifica ninguna fila de devices.
 -- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t devices.
 -- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
 -- antiguo no resuelve el país y el esquema nuevo rechaza nombres largos.
 -- ALTER TYPE reescribe devices con bloqueo exclusivo: la ingesta de telemetría se detiene hasta el COMMIT.
--- Vistas u otros objetos que dependan de devices.country hacen fallar ALTER TYPE: revisarlos antes.
 -- La comparación usa lower() de la BD, que en bases con locale C solo pliega ASCII:
 -- un valor antiguo con tildes y todo en mayúsculas se listaría como sin mapear.
--- Un test verifica el INSERT de countries (249 códigos ISO) y que el predicado de país
+-- Un test verifica la carga de countries (249 códigos ISO) y que el predicado de país
 -- coincida con el de la consulta de upsert de la API.
+--
+-- Antes de cambiar nada comprueba, y aborta con un mensaje que explica qué hacer si:
+--   * devices no existe, ya existe countries o devices_country_fkey, o no somos dueños de devices;
+--   * hay vistas, vistas materializadas o reglas que usan devices.country (bloquean ALTER TYPE).
+-- Tras crear countries (solo una tabla nueva, que se revierte si algo falla) y antes de tocar
+-- devices, lista los valores sin código ISO. Antes de ALTER TYPE verifica que devices conserva
+-- sus filas y que todas tienen un código presente en countries.
 
 SET LOCAL lock_timeout = '5s';
+
+-- +goose StatementBegin
+DO $$
+DECLARE
+    deps text;
+BEGIN
+    IF to_regclass('devices') IS NULL THEN
+        RAISE EXCEPTION 'La tabla devices no existe: la base no tiene el esquema original. Revisa con `migrate status` o usa `migrate baseline`.';
+    END IF;
+
+    IF NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = 'devices'::regclass), 'USAGE') THEN
+        RAISE EXCEPTION 'El rol % no es dueño de devices y no puede alterarla. Ejecuta la migración con el rol dueño de la tabla.', current_user;
+    END IF;
+
+    IF to_regclass('countries') IS NOT NULL THEN
+        RAISE EXCEPTION 'Ya existe una relación llamada countries: la base está a medio migrar o fue modificada a mano. Revisa el esquema antes de continuar.';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'devices_country_fkey' AND conrelid = 'devices'::regclass) THEN
+        RAISE EXCEPTION 'devices ya tiene la restricción devices_country_fkey: la base está a medio migrar o fue modificada a mano.';
+    END IF;
+
+    SELECT string_agg(format('%I (%s)', c.relname, r.rulename), ', ') INTO deps
+    FROM pg_depend d
+    JOIN pg_rewrite r ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+    JOIN pg_class c ON c.oid = r.ev_class
+    WHERE d.refclassid = 'pg_class'::regclass
+        AND d.refobjid = 'devices'::regclass
+        AND d.refobjsubid IN (
+            SELECT a.attnum FROM pg_attribute a
+            WHERE a.attrelid = 'devices'::regclass AND a.attname = 'country'
+        );
+    IF deps IS NOT NULL THEN
+        RAISE EXCEPTION 'Hay vistas, vistas materializadas o reglas que usan devices.country, que esta migración cambia a CHAR(2): %. Elimínalas (o recréalas después de migrar) y vuelve a ejecutar.', deps;
+    END IF;
+END $$;
+-- +goose StatementEnd
+
+LOCK TABLE devices IN SHARE ROW EXCLUSIVE MODE;
+
+SELECT set_config('migration.devices_rows', count(*)::text, true) FROM devices;
 
 CREATE TABLE countries (
     code                 CHAR(2) PRIMARY KEY,      -- ISO 3166-1 alfa-2, en mayúsculas
     name                 VARCHAR(60) NOT NULL UNIQUE, -- Nombre en español
     aliases              TEXT[] NOT NULL DEFAULT '{}' -- Otras grafías en minúsculas (inglés, sin tildes)
 );
+
+-- Si migra un superusuario, countries queda a nombre del dueño de devices, como si migrara el dueño.
+-- +goose StatementBegin
+DO $$
+DECLARE
+    dev_owner name;
+BEGIN
+    SELECT pg_get_userbyid(relowner) INTO dev_owner FROM pg_class WHERE oid = 'devices'::regclass;
+    IF dev_owner <> current_user THEN
+        EXECUTE format('ALTER TABLE %I OWNER TO %I', 'countries', dev_owner);
+    END IF;
+END $$;
+-- +goose StatementEnd
 
 INSERT INTO countries (code, name, aliases) VALUES
     ('AD', 'Andorra', ARRAY[]::text[]),
@@ -276,16 +337,20 @@ DO $$
 DECLARE
     unmapped TEXT;
 BEGIN
-    SELECT string_agg(DISTINCT d.country, ', ' ORDER BY d.country) INTO unmapped
-    FROM devices d
-    WHERE NOT EXISTS (
-        SELECT 1 FROM countries c
-        WHERE c.code = upper(btrim(d.country))
-            OR lower(c.name) = lower(btrim(d.country))
-            OR lower(btrim(d.country)) = ANY(c.aliases)
-    );
+    SELECT string_agg(format('"%s" (%s filas)', u.country, u.n), ', ' ORDER BY u.country) INTO unmapped
+    FROM (
+        SELECT d.country, count(*) AS n
+        FROM devices d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM countries c
+            WHERE c.code = upper(btrim(d.country))
+                OR lower(c.name) = lower(btrim(d.country))
+                OR lower(btrim(d.country)) = ANY(c.aliases)
+        )
+        GROUP BY d.country
+    ) AS u;
     IF unmapped IS NOT NULL THEN
-        RAISE EXCEPTION 'Valores de country sin código ISO: %', unmapped;
+        RAISE EXCEPTION 'Valores de country sin código ISO: %. Corrige devices.country a un nombre o código válido (UPDATE devices SET country = ... WHERE country = ...) y vuelve a ejecutar; no se modificó nada.', unmapped;
     END IF;
 END $$;
 -- +goose StatementEnd
@@ -296,6 +361,27 @@ UPDATE devices d SET country = (
         OR lower(c.name) = lower(btrim(d.country))
         OR lower(btrim(d.country)) = ANY(c.aliases)
 );
+
+-- +goose StatementBegin
+DO $$
+DECLARE
+    rows_before bigint := current_setting('migration.devices_rows')::bigint;
+    total bigint;
+    without_code bigint;
+BEGIN
+    SELECT count(*) INTO total FROM devices;
+    SELECT count(*) INTO without_code
+    FROM devices d
+    WHERE d.country IS NULL OR NOT EXISTS (SELECT 1 FROM countries c WHERE c.code = d.country);
+
+    IF total <> rows_before THEN
+        RAISE EXCEPTION 'devices cambió de % a % filas durante la migración; se revierte. Detén la ingesta y reintenta.', rows_before, total;
+    END IF;
+    IF without_code > 0 THEN
+        RAISE EXCEPTION '% dispositivos quedaron sin un código de país válido tras el UPDATE; se revierte.', without_code;
+    END IF;
+END $$;
+-- +goose StatementEnd
 
 ALTER TABLE devices ALTER COLUMN country TYPE CHAR(2);
 

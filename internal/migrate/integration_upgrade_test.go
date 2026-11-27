@@ -43,10 +43,14 @@ func TestMigrateUpgradeLegacyDataIntegration(t *testing.T) {
 
 	seed := []string{
 		`INSERT INTO devices (device_id, alias_name, platform, model, os_version, host_pc, host_ip, host_location, country, battery_design_cap, updated_at) VALUES
-			('d1', NULL, 'ios', 'iPhone 12,1', '17.4', 'pc-1', '10.0.0.1', 'Rack-1', 'chile', 3000, '2024-01-01T00:00:00Z'),
+			('d1', NULL, 'ios', 'iPhone 12,1', '17.4', 'pc-1', '10.0.0.1', 'Rack-A', 'chile', 3000, '2024-01-01T00:00:00Z'),
 			('d2', 'tablet', 'android', NULL, NULL, 'pc-1', '10.0.0.2', '', ' Perú ', NULL, '2024-02-01T00:00:00Z'),
 			('d3', NULL, 'android', NULL, NULL, 'pc-2', '', NULL, 'US', 0, NULL),
 			('d-bad', NULL, 'ios', NULL, NULL, 'pc-3', '10.0.0.3', NULL, 'Atlantis', NULL, '2024-03-01T00:00:00Z')`,
+		`INSERT INTO devices (device_id, platform, host_pc, host_ip, host_location, country, updated_at) VALUES
+			('d4-old', 'ios', 'pc-4', '10.0.0.4', 'Rack-Old', 'US', '2024-01-01T00:00:00Z'),
+			('d4-new', 'ios', 'pc-4', '10.0.0.5', 'Rack-New', 'US', '2024-02-01T00:00:00Z'),
+			('d4-null', 'ios', 'pc-4', '10.0.0.6', 'Rack-Null', 'US', NULL)`,
 		`INSERT INTO device_telemetry (time, device_id, battery_pct, temp_celsius, cycle_count, is_charging) VALUES
 			('2024-01-01T00:00:00Z', 'd1', 55.5, 'NaN', 10, true),
 			('2024-01-02T00:00:00Z', 'd2', NULL, NULL, NULL, NULL)`,
@@ -79,15 +83,27 @@ func TestMigrateUpgradeLegacyDataIntegration(t *testing.T) {
 	}
 
 	var hosts int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM hosts`).Scan(&hosts); err != nil || hosts != 3 {
-		t.Errorf("hosts = (%d, %v), want 3", hosts, err)
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM hosts`).Scan(&hosts); err != nil || hosts != 4 {
+		t.Errorf("hosts = (%d, %v), want 4", hosts, err)
 	}
 
 	var ip string
 	var loc *string
 	err = db.QueryRowContext(ctx, `SELECT host_ip, host_location FROM hosts WHERE host_pc = 'pc-1'`).Scan(&ip, &loc)
-	if err != nil || ip != "10.0.0.2" || loc != nil {
-		t.Errorf("pc-1 = (%q, %v, %v), want latest device ip and NULL location", ip, loc, err)
+	if err != nil || ip != "10.0.0.2" || loc == nil || *loc != "Rack-A" {
+		t.Errorf("pc-1 = (%q, %v, %v), want latest device ip and latest non-empty location Rack-A", ip, loc, err)
+	}
+
+	loc = nil
+	err = db.QueryRowContext(ctx, `SELECT host_ip, host_location FROM hosts WHERE host_pc = 'pc-2'`).Scan(&ip, &loc)
+	if err != nil || ip != "" || loc != nil {
+		t.Errorf("pc-2 = (%q, %v, %v), want empty ip and NULL location", ip, loc, err)
+	}
+
+	loc = nil
+	err = db.QueryRowContext(ctx, `SELECT host_ip, host_location FROM hosts WHERE host_pc = 'pc-4'`).Scan(&ip, &loc)
+	if err != nil || ip != "10.0.0.5" || loc == nil || *loc != "Rack-New" {
+		t.Errorf("pc-4 = (%q, %v, %v), want the latest dated device (NULL updated_at sorts last): ip 10.0.0.5, location Rack-New", ip, loc, err)
 	}
 
 	var attrs string

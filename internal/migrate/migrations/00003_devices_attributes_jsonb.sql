@@ -1,9 +1,11 @@
 -- +goose Up
 -- Mueve host_pc, host_ip y host_location de devices a la nueva tabla hosts (una fila por host_pc)
 -- y alias_name, model, os_version y battery_design_cap a la columna JSONB devices.attributes.
--- Si los dispositivos de un host discrepan, hosts toma los valores del dispositivo actualizado más
--- recientemente (updated_at; a igualdad o sin fecha, el de menor device_id). host_location vacío pasa a NULL
--- y un host_ip NULL pasa a cadena vacía, porque hosts.host_ip es NOT NULL.
+-- Si los dispositivos de un host discrepan, hosts toma host_ip del dispositivo actualizado más
+-- recientemente (updated_at; a igualdad o sin fecha, el de menor device_id) y host_location del más
+-- reciente que tenga una ubicación no vacía, igual que el upsert de la API. host_location queda NULL
+-- solo si ningún dispositivo del host tiene ubicación, y un host_ip NULL pasa a cadena vacía,
+-- porque hosts.host_ip es NOT NULL.
 -- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t devices.
 -- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
 -- antiguo no es compatible con el esquema nuevo ni al revés.
@@ -15,6 +17,9 @@
 --   * hay vistas, vistas materializadas o reglas que usan las columnas que se eliminan;
 --   * hay dispositivos con host_pc NULL, o con host_pc, host_ip o host_location más largos que
 --     las columnas de hosts (VARCHAR(100), VARCHAR(15) y VARCHAR(50)); se listan los device_id.
+--     Los límites de longitud se comprueban solo en el dispositivo que gana en cada host (el más
+--     reciente para host_pc y host_ip; el más reciente con ubicación no vacía para host_location),
+--     no en todos los dispositivos.
 -- Antes de eliminar las columnas antiguas verifica que devices conserva sus filas, que todo
 -- dispositivo tiene su fila en hosts, que hosts tiene una fila por host_pc distinto y que, por
 -- cada atributo, las filas con valor coinciden con las filas que tienen esa clave en attributes.
@@ -91,13 +96,25 @@ BEGIN
     SELECT count(*), array_to_string((array_agg(device_id ORDER BY device_id))[1:10], ', ')
     INTO n, sample
     FROM (
-        SELECT DISTINCT ON (host_pc) device_id, host_pc, host_ip, host_location
-        FROM devices
-        ORDER BY host_pc, updated_at DESC NULLS LAST, device_id
-    ) AS latest
-    WHERE length(host_pc) > 100 OR length(host_ip) > 15 OR length(host_location) > 50;
+        SELECT device_id
+        FROM (
+            SELECT DISTINCT ON (host_pc) device_id, host_pc, host_ip
+            FROM devices
+            ORDER BY host_pc, updated_at DESC NULLS LAST, device_id
+        ) AS latest_ip
+        WHERE length(host_pc) > 100 OR length(host_ip) > 15
+        UNION
+        SELECT device_id
+        FROM (
+            SELECT DISTINCT ON (host_pc) device_id, host_location
+            FROM devices
+            WHERE NULLIF(host_location, '') IS NOT NULL
+            ORDER BY host_pc, updated_at DESC NULLS LAST, device_id
+        ) AS latest_loc
+        WHERE length(host_location) > 50
+    ) AS oversized;
     IF n > 0 THEN
-        RAISE EXCEPTION 'Hay % hosts cuyo host_pc (máx. 100), host_ip (máx. 15) o host_location (máx. 50) no cabe en la tabla hosts (device_id, hasta 10): %. Acorta esos valores antes de migrar.', n, sample;
+        RAISE EXCEPTION 'Hay % dispositivos cuyo host_pc (máx. 100), host_ip (máx. 15) o host_location (máx. 50) no cabe en la tabla hosts (device_id, hasta 10): %. Acorta esos valores antes de migrar.', n, sample;
     END IF;
 END $$;
 -- +goose StatementEnd
@@ -128,9 +145,18 @@ END $$;
 -- +goose StatementEnd
 
 INSERT INTO hosts (host_pc, host_ip, host_location, updated_at)
-SELECT DISTINCT ON (host_pc) host_pc, COALESCE(host_ip, ''), NULLIF(host_location, ''), NOW()
-FROM devices
-ORDER BY host_pc, updated_at DESC NULLS LAST, device_id;
+SELECT ip.host_pc, COALESCE(ip.host_ip, ''), loc.host_location, NOW()
+FROM (
+    SELECT DISTINCT ON (host_pc) host_pc, host_ip
+    FROM devices
+    ORDER BY host_pc, updated_at DESC NULLS LAST, device_id
+) AS ip
+LEFT JOIN (
+    SELECT DISTINCT ON (host_pc) host_pc, host_location
+    FROM devices
+    WHERE NULLIF(host_location, '') IS NOT NULL
+    ORDER BY host_pc, updated_at DESC NULLS LAST, device_id
+) AS loc ON loc.host_pc = ip.host_pc;
 
 UPDATE devices SET attributes = jsonb_strip_nulls(jsonb_build_object(
     'alias_name',         alias_name,

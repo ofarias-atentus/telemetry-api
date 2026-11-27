@@ -153,8 +153,11 @@ func TestIntegrationIngest(t *testing.T) {
 			name:     "devices with country names and an unknown one",
 			path:     "/api/v1/devices",
 			body:     countryBody,
-			wantCode: http.StatusOK,
-			wantBody: `{"status":"success"}`,
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: fmt.Sprintf(
+				`{"status":"error","stored":%d,"failed":[{"device_id":%q,"error":"país desconocido"}]}`,
+				len(countryCases)-1, deviceID+"-country-4",
+			),
 		},
 		{
 			name:     "legacy device insert",
@@ -196,6 +199,40 @@ func TestIntegrationIngest(t *testing.T) {
 		if body != tt.wantBody {
 			t.Fatalf("%s: body = %q, want %q", tt.name, body, tt.wantBody)
 		}
+	}
+
+	var secondCountry string
+	var secondUpdated time.Time
+	if err := pool.QueryRow(
+		ctx,
+		"SELECT country, updated_at FROM devices WHERE device_id = $1",
+		secondID,
+	).Scan(&secondCountry, &secondUpdated); err != nil {
+		t.Fatalf("query second device before resend: %v", err)
+	}
+	resendBody := fmt.Sprintf(
+		`[{"device_id":%q,"platform":"ios","host_name":%q,"host_ip":"10.0.0.9","country":"Narnia","status":"online"}]`,
+		secondID, hostPC,
+	)
+	code, body := post("/api/v1/devices", resendBody)
+	wantResend := fmt.Sprintf(
+		`{"status":"error","stored":0,"failed":[{"device_id":%q,"error":"país desconocido"}]}`, secondID,
+	)
+	if code != http.StatusUnprocessableEntity || body != wantResend {
+		t.Fatalf("resend with unknown country: status = %d body = %q, want 422 %q", code, body, wantResend)
+	}
+	var secondCountryAfter string
+	var secondUpdatedAfter time.Time
+	if err := pool.QueryRow(
+		ctx,
+		"SELECT country, updated_at FROM devices WHERE device_id = $1",
+		secondID,
+	).Scan(&secondCountryAfter, &secondUpdatedAfter); err != nil {
+		t.Fatalf("query second device after resend: %v", err)
+	}
+	if secondCountryAfter != secondCountry || !secondUpdatedAfter.Equal(secondUpdated) {
+		t.Errorf("existing device changed by rejected resend: country %q -> %q, updated_at %v -> %v",
+			secondCountry, secondCountryAfter, secondUpdated, secondUpdatedAfter)
 	}
 
 	var (

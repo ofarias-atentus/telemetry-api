@@ -428,7 +428,7 @@ Ejemplo en formato `json` (`LOG_FORMAT=json`):
 
 #### Errores del handler
 
-- Un dispositivo que falla en `POST /api/v1/devices` se registra como `upsert falló`, con los atributos `device_id` y `err`.
+- Un dispositivo que falla en `POST /api/v1/devices` se registra como `upsert falló`, con los atributos `device_id` y `err`: en nivel `WARN` si el dato es inválido y `ERROR` en otro caso. La petición con fallos añade una línea `dispositivos rechazados` (atributos `stored` y `failed`), en nivel `WARN` para `422` o `ERROR` para `500`.
 - Una inserción masiva fallida en `POST /api/v1/telemetry` se registra como `inserción masiva CopyFrom fallida`, con los atributos `records` y `err`.
 
 Ejemplo de un lote de telemetría rechazado por una llave foránea. La última línea es el registro de la solicitud con el mismo `request_id`:
@@ -559,7 +559,7 @@ Los atributos van en el nivel superior del elemento y no se envía `attributes` 
 
 #### Reglas de combinación y del host
 
-- `host_name` se guarda como `hosts.host_pc` y como `devices.host_pc`. Cada dispositivo se guarda con una sola sentencia SQL que hace el upsert del host y luego del dispositivo, de forma atómica.
+- `host_name` se guarda como `hosts.host_pc` y como `devices.host_pc`. Cada dispositivo se guarda con una sola sentencia SQL que hace el upsert del host y luego del dispositivo, de forma atómica. No hay transacción entre dispositivos: los que se guardan quedan guardados aunque otro del mismo lote falle.
 - **Host**: `host_ip` toma siempre el valor del último dispositivo enviado. `host_location` se conserva si el dispositivo no la envía o la envía vacía, porque la ubicación pertenece al host. Antes se sobrescribía con `""`.
 - **Dispositivo**: `host_pc`, `country` y `status` se actualizan. `platform` nunca se actualiza.
 - **`attributes`**: en el formato nuevo, cualquier clave es válida y se admiten valores anidados. Los campos legados enviados en el mismo elemento se agregan solo si su clave no existe en `attributes`, así que `attributes` gana en caso de conflicto.
@@ -576,18 +576,43 @@ Los atributos van en el nivel superior del elemento y no se envía `attributes` 
 | `Perú`, `peru`, `PERÚ` | `PE` |
 | `usa` | `US` |
 
-- Un valor desconocido (por ejemplo `Atlantis`) hace fallar la sentencia de ese dispositivo con un error de `NOT NULL`. Como es una sola sentencia, también se revierte el upsert de su host. El error se registra en nivel `ERROR` como `upsert falló`, con `device_id` y `err`, y la respuesta sigue siendo `200`.
-- Un dispositivo ya registrado que se envía con un país desconocido no se actualiza.
+- Un valor desconocido (por ejemplo `Atlantis`) hace fallar la sentencia de ese dispositivo con un error de `NOT NULL` (SQLSTATE `23502` sobre `country`). Como es una sola sentencia, también se revierte el upsert de su host. El dispositivo aparece en `failed` con el motivo `país desconocido`, se registra como `upsert falló` en nivel `WARN`, y la respuesta es `422` (ver Respuestas más abajo).
+- Un dispositivo ya registrado que se envía con un país desconocido no se actualiza y también se reporta como `país desconocido` con `422`.
 - Go convierte el valor a minúsculas antes de enviarlo a la base de datos, porque `lower()` de PostgreSQL solo pliega ASCII en bases con locale `C`.
 
 #### Respuestas
 
-- **`200 OK`**:
+Cada dispositivo se procesa por separado: los válidos se guardan aunque otros del mismo lote fallen.
+
+- **`200 OK`**: todos los dispositivos se guardaron, o el arreglo está vacío.
   ```json
   {"status":"success"}
   ```
+- **`422 Unprocessable Entity`**: todos los fallos son de datos (SQLSTATE de clase `22` o `23`, salvo `23505`). Por ejemplo, un país desconocido.
+- **`500 Internal Server Error`**: algún fallo no es de datos (error no esperado de PostgreSQL, otro SQLSTATE o `23505`), o hay una mezcla de fallos de datos y de otro tipo. El `23505` solo puede venir de una carrera entre inserciones concurrentes, así que conviene reintentar.
 - **`400 Bad Request`**: JSON inválido o `attributes` que no es un objeto.
 - **`405 Method Not Allowed`**: Método HTTP distinto de `POST`.
+
+Si hay algún fallo, el cuerpo es un JSON con `Content-Type: application/json`. `stored` cuenta los dispositivos guardados y `failed` lista los rechazados, en el mismo orden de la petición:
+
+```json
+{
+  "status": "error",
+  "stored": 1,
+  "failed": [
+    {"device_id": "00008101-00123456789ABCDE", "error": "país desconocido"}
+  ]
+}
+```
+
+| `error` | Causa |
+|---|---|
+| `país desconocido` | `country` no corresponde a ningún código, nombre o alias de `countries`. |
+| `valor demasiado largo` | Un valor supera el largo de su columna. |
+| `datos inválidos` | Otro dato que PostgreSQL rechaza (clase `22` o `23`). |
+| `error interno` | Cualquier otro error, incluido `23505`. |
+
+El agente del dispositivo considera registrado cualquier código `2xx` y luego envía la telemetría de ese dispositivo. Un `device_id` no registrado hace fallar todo el lote de telemetría con `500`, así que este endpoint responde con un código distinto de `2xx` cuando algún dispositivo no se guardó.
 
 #### Ejemplo con `curl`
 

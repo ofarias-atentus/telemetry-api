@@ -3,9 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const upsertDeviceQuery = `
@@ -50,7 +54,13 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+	log := s.loggerFrom(r.Context())
 
+	var (
+		stored      int
+		failed      []failedDevice
+		dataFailure = true
+	)
 	for _, d := range devices {
 		// lower() de Postgres depende de la locale y en C solo pliega ASCII; Go pliega Unicode.
 		country := strings.ToLower(strings.TrimSpace(d.Country))
@@ -67,10 +77,64 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			d.attributes(),
 		)
 		if err != nil {
-			s.loggerFrom(r.Context()).Error("upsert falló", "device_id", d.DeviceID, "err", err)
+			reason, isData := deviceFailureReason(err)
+			level := slog.LevelError
+			if isData {
+				level = slog.LevelWarn
+			}
+			log.Log(ctx, level, "upsert falló", "device_id", d.DeviceID, "err", err)
+			failed = append(failed, failedDevice{DeviceID: d.DeviceID, Error: reason})
+			dataFailure = dataFailure && isData
+			continue
 		}
+		stored++
 	}
 
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, `{"status":"success"}`)
+	if len(failed) == 0 {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"status":"success"}`)
+		return
+	}
+
+	status, level := http.StatusUnprocessableEntity, slog.LevelWarn
+	if !dataFailure {
+		status, level = http.StatusInternalServerError, slog.LevelError
+	}
+	log.Log(ctx, level, "dispositivos rechazados", "stored", stored, "failed", len(failed))
+
+	body, _ := json.Marshal(deviceErrorResponse{Status: "error", Stored: stored, Failed: failed})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(body)
+}
+
+type failedDevice struct {
+	DeviceID string `json:"device_id"`
+	Error    string `json:"error"`
+}
+
+type deviceErrorResponse struct {
+	Status string         `json:"status"`
+	Stored int            `json:"stored"`
+	Failed []failedDevice `json:"failed"`
+}
+
+// deviceFailureReason devuelve el motivo corto del rechazo y si la causa son los datos del dispositivo.
+func deviceFailureReason(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return "error interno", false
+	}
+	switch {
+	// Con ON CONFLICT solo puede venir de una carrera entre inserciones concurrentes: conviene reintentar.
+	case pgErr.Code == "23505":
+		return "error interno", false
+	case pgErr.Code == "23502" && pgErr.ColumnName == "country":
+		return "país desconocido", true
+	case pgErr.Code == "22001":
+		return "valor demasiado largo", true
+	case pgErr.Code[:2] == "22" || pgErr.Code[:2] == "23":
+		return "datos inválidos", true
+	}
+	return "error interno", false
 }

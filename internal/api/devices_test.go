@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const twoDevicesBody = `[
@@ -74,15 +76,6 @@ func TestHandleDevices(t *testing.T) {
 			wantBody:  `{"status":"success"}`,
 			wantExecs: 2,
 		},
-		{
-			name:      "exec error on one row still succeeds",
-			method:    http.MethodPost,
-			body:      twoDevicesBody,
-			execErr:   map[string]error{"d1": errors.New("boom")},
-			wantCode:  http.StatusOK,
-			wantBody:  `{"status":"success"}`,
-			wantExecs: 2,
-		},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +99,110 @@ func TestHandleDevices(t *testing.T) {
 			}
 			if len(db.copyCalls) != 0 {
 				t.Errorf("CopyFrom calls = %d, want 0", len(db.copyCalls))
+			}
+		})
+	}
+}
+
+func TestHandleDevicesRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		execErr  map[string]error
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "unknown country",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "23502", ColumnName: "country"}},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"país desconocido"}]}`,
+		},
+		{
+			name:     "value too long",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "22001"}},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"valor demasiado largo"}]}`,
+		},
+		{
+			name:     "other not-null column",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "23502", ColumnName: "host_pc"}},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"datos inválidos"}]}`,
+		},
+		{
+			name:     "foreign key violation wrapped",
+			execErr:  map[string]error{"d1": fmt.Errorf("exec: %w", &pgconn.PgError{Code: "23503"})},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"datos inválidos"}]}`,
+		},
+		{
+			name:     "plain error",
+			execErr:  map[string]error{"d1": errors.New("boom")},
+			wantCode: http.StatusInternalServerError,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"error interno"}]}`,
+		},
+		{
+			name:     "other sqlstate class",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "40001"}},
+			wantCode: http.StatusInternalServerError,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"error interno"}]}`,
+		},
+		{
+			name:     "invalid text representation",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "22P02"}},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"datos inválidos"}]}`,
+		},
+		{
+			name:     "unique violation is retryable",
+			execErr:  map[string]error{"d1": &pgconn.PgError{Code: "23505"}},
+			wantCode: http.StatusInternalServerError,
+			wantBody: `{"status":"error","stored":1,"failed":[{"device_id":"d1","error":"error interno"}]}`,
+		},
+		{
+			name: "all devices fail with data errors",
+			execErr: map[string]error{
+				"d1": &pgconn.PgError{Code: "23502", ColumnName: "country"},
+				"d2": &pgconn.PgError{Code: "22001"},
+			},
+			wantCode: http.StatusUnprocessableEntity,
+			wantBody: `{"status":"error","stored":0,"failed":[` +
+				`{"device_id":"d1","error":"país desconocido"},{"device_id":"d2","error":"valor demasiado largo"}]}`,
+		},
+		{
+			name: "mixed data and internal failures",
+			execErr: map[string]error{
+				"d1": &pgconn.PgError{Code: "23502", ColumnName: "country"},
+				"d2": errors.New("boom"),
+			},
+			wantCode: http.StatusInternalServerError,
+			wantBody: `{"status":"error","stored":0,"failed":[` +
+				`{"device_id":"d1","error":"país desconocido"},{"device_id":"d2","error":"error interno"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := &fakeDB{execErr: tt.execErr}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/devices", strings.NewReader(twoDevicesBody))
+			rec := httptest.NewRecorder()
+			NewServer(db, nil).Routes().ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantCode)
+			}
+			if rec.Body.String() != tt.wantBody {
+				t.Errorf("body = %q, want %q", rec.Body.String(), tt.wantBody)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			if len(db.execCalls) != 2 {
+				t.Errorf("Exec calls = %d, want 2 (every device is attempted)", len(db.execCalls))
 			}
 		})
 	}

@@ -1,5 +1,5 @@
 # Binarios compilados
-/atdevice-api
+/atelemetry-mobile
 /telemetry-api
 *.exe
 *.out

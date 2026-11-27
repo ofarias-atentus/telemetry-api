@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Central ingestion API in Go (module `telemetry-api`) that stores device inventory and hardware telemetry (battery, temperature, voltage, CPU, RAM) from iOS and Android devices in PostgreSQL, with TimescaleDB optional. The README calls the built binary `atdevice-api`.
+Central ingestion API in Go (module `telemetry-api`) that stores device inventory and hardware telemetry (battery, temperature, voltage, CPU, RAM) from iOS and Android devices in PostgreSQL, with TimescaleDB optional. The README calls the built binary `atelemetry-mobile`.
 
-`cmd/atdevice-api/` (`package main`) is the CLI and holds only the CLI. `main.go` dispatches the subcommands (`serve`, `migrate status|up|baseline`, `help`) and maps errors to exit codes (0 ok, 1 schema version mismatch, 2 usage, config, connectivity or other operational error). `serve.go` loads the config, builds the logger and calls `slog.SetDefault`, creates the pgx pool, pings it with a 10s timeout, runs `migrate.CheckVersion`, and serves an `http.Server` whose `Handler` is `api.NewServer(pool, logger).Handler()` and whose `ErrorLog` is `slog.NewLogLogger`. `migrate.go` wires the `migrate` subcommands. The rest is in `internal/`:
+`cmd/atelemetry-mobile/` (`package main`) is the CLI and holds only the CLI. `main.go` dispatches the subcommands (`serve`, `migrate status|up|baseline`, `help`) and maps errors to exit codes (0 ok, 1 schema version mismatch, 2 usage, config, connectivity or other operational error). `serve.go` loads the config, builds the logger and calls `slog.SetDefault`, creates the pgx pool, pings it with a 10s timeout, runs `migrate.CheckVersion`, and serves an `http.Server` whose `Handler` is `api.NewServer(pool, logger).Handler()` and whose `ErrorLog` is `slog.NewLogLogger`. `migrate.go` wires the `migrate` subcommands. The rest is in `internal/`:
 
 - `internal/config`: `Config` types (including `Log LogConfig{Level slog.Level; Format string}`), `Load(envFile string)` (reads the optional `.env` file with godotenv, then the environment, and reports all validation errors together), `DatabaseConfig.ConnString()` (sslmode only, for `database/sql` in migrations), and `DatabaseConfig.BuildConnString()` (adds `pool_max_conns`/`pool_min_conns` for pgxpool). Tests use an unexported `fromEnv(lookup)` and `t.Setenv`.
 - `internal/logging`: `New(w io.Writer, cfg config.LogConfig) *slog.Logger`, which builds the stdlib `log/slog` logger in text or JSON format at the configured level.
@@ -15,7 +15,7 @@ Central ingestion API in Go (module `telemetry-api`) that stores device inventor
 
 It uses stdlib `net/http` with no router. The direct dependencies are `github.com/jackc/pgx/v5` (`pgxpool`, `CopyFrom`), `github.com/joho/godotenv` (`.env` loading) and `github.com/pressly/goose/v3` (migrations). Logging uses stdlib `log/slog` and adds no dependency.
 
-New code goes in `internal/` packages. `cmd/atdevice-api` only holds the CLI, and the build is `go build -o atdevice-api ./cmd/atdevice-api`. The `DB` interface is the test seam: handler tests inject a fake instead of a real pool.
+New code goes in `internal/` packages. `cmd/atelemetry-mobile` only holds the CLI, and the build is `go build -o atelemetry-mobile ./cmd/atelemetry-mobile`. The `DB` interface is the test seam: handler tests inject a fake instead of a real pool.
 
 The schema is defined by the migrations in `internal/migrate/migrations/`. The resulting shape: `countries` (PK `code CHAR(2)`, ISO 3166-1 alpha-2, with Spanish `name` and lowercase `aliases`), `hosts` (PK `host_pc`, one row per monitoring PC), `devices` (PK `device_id`, `country CHAR(2)` FK to `countries`, `host_pc` FK to `hosts`, core columns plus `attributes JSONB`), and `device_telemetry` (columns `time`, `device_id`, and `data JSONB` for metrics; FK to `devices`, and a hypertable on `time` when TimescaleDB is available).
 
@@ -25,7 +25,7 @@ Go style and practice guides are in `.claude/skills/golang-*` (from samber/cc-sk
 
 The README, log messages, and error messages are in Spanish. Keep new messages and docs consistent with that. Log attribute keys (`request_id`, `device_id`, `status`) are English. This file is in English.
 
-The capitalized Spanish startup error strings in `cmd/atdevice-api/serve.go` (config read, pgx pool creation, ping) are user-facing messages kept byte-identical and logged at ERROR, so linters' error-string rules (lowercase, no capital) do not apply. Do not lowercase them. `migrate.go` reuses the config one ("Error crítico al leer la configuración de la API").
+The capitalized Spanish startup error strings in `cmd/atelemetry-mobile/serve.go` (config read, pgx pool creation, ping) are user-facing messages kept byte-identical and logged at ERROR, so linters' error-string rules (lowercase, no capital) do not apply. Do not lowercase them. `migrate.go` reuses the config one ("Error crítico al leer la configuración de la API").
 
 ## Runtime behavior
 
@@ -51,7 +51,7 @@ The capitalized Spanish startup error strings in `cmd/atdevice-api/serve.go` (co
 ## Database
 
 - Requires PostgreSQL 14+. TimescaleDB is optional: migration `00001` runs `CREATE EXTENSION timescaledb` and `create_hypertable` only if `timescaledb` appears in `pg_available_extensions`. The app uses no TimescaleDB functions. This is how it has been run locally (PostgreSQL 16 without TimescaleDB).
-- Fresh install: `atdevice-api migrate up` on an empty database. There is no `database.sql` anymore.
+- Fresh install: `atelemetry-mobile migrate up` on an empty database. There is no `database.sql` anymore.
 - Migrations are goose SQL files in `internal/migrate/migrations/`, embedded in the binary: `00001_initial` (original schema), `00002_device_telemetry_jsonb` (moves the 8 metric columns into `data`), `00003_devices_attributes_jsonb` (creates `hosts`, moves `host_ip` and `host_location` there, moves the 4 attribute fields into `devices.attributes`, adds the FK), and `00004_countries` (creates `countries`, maps `devices.country` to ISO codes, changes it to `CHAR(2)` with the FK; it fails and lists the values if any existing value cannot be mapped). Every migration is irreversible (no `-- +goose Down`) and runs in a transaction. `00002`–`00004` set `SET LOCAL lock_timeout = '5s'`; `00001` does not. Before changing anything, `00002`–`00004` check the role (must own the table, or be superuser), missing or already-present columns, and dependent views/matviews/rules, and stop with a Spanish error. `00002` also stops on compressed or compression-enabled hypertables and on continuous aggregates (the error includes the decompress commands). `00003` stops on NULL `host_pc` or over-long values (`host_pc` > 100 and `host_ip` > 15 on the IP winner per host, `host_location` > 50 on the location winner per host). `00004` stops on unmappable `devices.country` values and lists them with counts. Before each destructive step they verify their own result (row counts, per-metric or per-attribute key counts, every device has a host and a country) and roll back on mismatch.
 - Every schema change is a new numbered file in `internal/migrate/migrations/` plus a bump of `LatestVersion` in `internal/migrate/migrate.go`. `migrate_test.go` checks that the numbering is contiguous from 1 and that the highest version equals `LatestVersion`.
 - `migrate up` takes the advisory lock `gooseLockKey` (goose's session locker) and refuses a database that has any of `countries`, `device_telemetry`, `devices`, `hosts` but no `goose_db_version` (exit 1, message points to `baseline`). That check runs before goose takes the lock, so run `up` from one place at a time. A migration failure makes `up` exit 2; the failed migration is rolled back completely and earlier ones stay applied, so fix the cause and rerun `up`.
@@ -67,14 +67,14 @@ The capitalized Spanish startup error strings in `cmd/atdevice-api/serve.go` (co
 
 ```bash
 go mod download
-cp .env.example .env                              # then edit; .env is gitignored
-go build -o atdevice-api ./cmd/atdevice-api       # or: go run ./cmd/atdevice-api serve
-./atdevice-api serve                              # from the repo root, reads .env; never migrates
-./atdevice-api serve --host 127.0.0.1 --port 9090
-LOG_LEVEL=debug LOG_FORMAT=json ./atdevice-api serve   # override logging for one run
-./atdevice-api migrate status                     # exit 0 only when up to date
-./atdevice-api migrate up                         # empty database, or pending migrations
-./atdevice-api migrate baseline                   # once, for databases created by the old psql scripts
+cp .env.example .env                                      # then edit; .env is gitignored
+go build -o atelemetry-mobile ./cmd/atelemetry-mobile     # or: go run ./cmd/atelemetry-mobile serve
+./atelemetry-mobile serve                                 # from the repo root, reads .env; never migrates
+./atelemetry-mobile serve --host 127.0.0.1 --port 9090
+LOG_LEVEL=debug LOG_FORMAT=json ./atelemetry-mobile serve   # override logging for one run
+./atelemetry-mobile migrate status                        # exit 0 only when up to date
+./atelemetry-mobile migrate up                            # empty database, or pending migrations
+./atelemetry-mobile migrate baseline                      # once, for databases created by the old psql scripts
 go vet ./...
 gofmt -l .
 go test ./...
@@ -84,14 +84,14 @@ TEST_DATABASE_URL='postgres://user:pass@host:5432/attelemetry?sslmode=disable' \
   go test -tags integration -run Integration ./internal/api/   # database already at version 4 (migrate up)
 TEST_MIGRATE_DATABASE_URL='postgres://user:pass@host:5432/scratch?sslmode=disable' \
   go test -tags integration -run Integration ./internal/migrate/   # EMPTY throwaway database, no pool_* params; does not clean up
-docker build -t atdevice-api .
-docker run --rm --env-file .env.docker atdevice-api migrate status
-docker run -d --name atdevice-api --env-file .env.docker -p 8080:8080 --stop-timeout 30 atdevice-api
+docker build -t atelemetry-mobile .
+docker run --rm --env-file .env.docker atelemetry-mobile migrate status
+docker run -d --name atelemetry-mobile --env-file .env.docker -p 8080:8080 --stop-timeout 30 atelemetry-mobile
 ```
 
 Unit tests use stdlib `testing` and `httptest` with a fake DB (`internal/api/fake_db_test.go`) and need no database. `schema_test.go` reads the countries migration and checks the predicate against the upsert, so it also needs no database. The API integration test (`internal/api/integration_test.go`, build tag `integration`) skips when `TEST_DATABASE_URL` is unset, assumes the database is migrated to version 4, and creates and deletes its own `itest-*` rows. The migrate integration test (`internal/migrate/integration_test.go`, build tag `integration`) skips when `TEST_MIGRATE_DATABASE_URL` is unset, and needs an empty throwaway database. `internal/migrate/integration_upgrade_test.go` (`TestMigrateUpgradeLegacyDataIntegration`, same env var, same build tag) runs `DROP SCHEMA public CASCADE` before building the legacy schema with data, so it is for throwaway databases only.
 
-Docker: the `Dockerfile` is two stages (`golang:1.27.1-bookworm` build with `GOTOOLCHAIN=local` and `CGO_ENABLED=0`; runtime `gcr.io/distroless/static-debian12:nonroot`, `ENTRYPOINT ["atdevice-api"]`, `CMD ["serve"]`). `.dockerignore` is an allowlist (`go.mod`, `go.sum`, `cmd/`, `internal/`): keep it that way so `.env` never enters the image. Runtime config comes from `--env-file` or compose `env_file`; quote values with `$`, `#` or spaces only for `env_file` (see Runtime behavior). `deploy/docker-compose.yml` is the reference compose file, and `installer/` builds an Ubuntu 20.04 `.deb` that installs it under `/srv/atdevice-api` with the systemd unit `atdevice-api.service` (`docker compose up`). The image name `atentuschile/atdevice-api` used in compose is an assumption to confirm.
+Docker: the `Dockerfile` is two stages (`golang:1.27.1-bookworm` build with `GOTOOLCHAIN=local` and `CGO_ENABLED=0`; runtime `gcr.io/distroless/static-debian12:nonroot`, `ENTRYPOINT ["atelemetry-mobile"]`, `CMD ["serve"]`). `.dockerignore` is an allowlist (`go.mod`, `go.sum`, `cmd/`, `internal/`): keep it that way so `.env` never enters the image. Runtime config comes from `--env-file` or compose `env_file`; quote values with `$`, `#` or spaces only for `env_file` (see Runtime behavior). `deploy/docker-compose.yml` is the reference compose file, and `installer/` builds an Ubuntu 20.04 `.deb` that installs it under `/srv/atelemetry-mobile` with the systemd unit `atelemetry-mobile.service` (`docker compose up`). The image name `atentuschile/atelemetry-mobile` used in compose is an assumption to confirm.
 
 There is no Makefile or linter config.
 

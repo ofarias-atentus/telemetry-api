@@ -1,11 +1,11 @@
-// Command atdevice-api es la API ingestora central de inventario y telemetría.
+// Command atelemetry-mobile es la API ingestora central de inventario y telemetría.
 //
 // Subcomandos:
 //
-//	atdevice-api serve            - comprueba el esquema y sirve la API HTTP
-//	atdevice-api migrate status   - compara la versión aplicada con la esperada
-//	atdevice-api migrate up       - aplica las migraciones pendientes
-//	atdevice-api migrate baseline - registra el historial en una base creada con los scripts antiguos
+//	atelemetry-mobile serve            - comprueba el esquema y sirve la API HTTP
+//	atelemetry-mobile migrate status   - compara la versión aplicada con la esperada
+//	atelemetry-mobile migrate up       - aplica las migraciones pendientes
+//	atelemetry-mobile migrate baseline - registra el historial en una base creada con los scripts antiguos
 //
 // serve nunca migra. Códigos de salida: 0 correcto, 1 versión del esquema
 // distinta, pendiente o sin historial, 2 uso, configuración, conectividad u
@@ -28,11 +28,11 @@ import (
 const migrateTimeout = 5 * time.Minute
 
 const usage = `uso:
-  atdevice-api serve [--host HOST] [--port PUERTO]   (por defecto todas las interfaces y SERVER_PORT)
-  atdevice-api migrate status      muestra la versión esperada y la aplicada (salida 1 si no coinciden)
-  atdevice-api migrate up          aplica las migraciones pendientes
-  atdevice-api migrate baseline    registra el historial en una base creada con los scripts SQL antiguos
-  atdevice-api help
+  atelemetry-mobile serve [--host HOST] [--port PUERTO]   (por defecto todas las interfaces y SERVER_PORT)
+  atelemetry-mobile migrate status      muestra la versión esperada y la aplicada (salida 1 si no coinciden)
+  atelemetry-mobile migrate up          aplica las migraciones pendientes
+  atelemetry-mobile migrate baseline    registra el historial en una base creada con los scripts SQL antiguos
+  atelemetry-mobile help
 
 La configuración sale de las variables de entorno y del archivo .env del directorio actual.
 `

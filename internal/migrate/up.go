@@ -115,7 +115,7 @@ func unversionedError(versioned bool, existing []string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: la base ya tiene las tablas %s pero no tiene historial de migraciones "+
-		"(base existente sin historial); ejecuta `atdevice-api migrate baseline`",
+		"(base existente sin historial); ejecuta `atelemetry-mobile migrate baseline`",
 		ErrVersionMismatch, strings.Join(existing, ", "))
 }
 

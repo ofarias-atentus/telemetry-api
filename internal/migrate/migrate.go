@@ -87,8 +87,8 @@ func CheckVersion(ctx context.Context, q Querier) error {
 	if err != nil {
 		if errors.Is(err, ErrNotVersioned) {
 			return fmt.Errorf("%w: la base de datos no tiene historial de migraciones; "+
-				"ejecuta `atdevice-api migrate status` para diagnosticar, `atdevice-api migrate up` si la base está vacía "+
-				"o `atdevice-api migrate baseline` si fue creada con los scripts SQL antiguos", ErrVersionMismatch)
+				"ejecuta `atelemetry-mobile migrate status` para diagnosticar, `atelemetry-mobile migrate up` si la base está vacía "+
+				"o `atelemetry-mobile migrate baseline` si fue creada con los scripts SQL antiguos", ErrVersionMismatch)
 		}
 		return err
 	}
@@ -101,10 +101,10 @@ func versionError(applied int64) error {
 		return nil
 	case applied < LatestVersion:
 		return fmt.Errorf("%w: el esquema está en la versión %d y la API requiere la %d; "+
-			"ejecuta `atdevice-api migrate up`", ErrVersionMismatch, applied, LatestVersion)
+			"ejecuta `atelemetry-mobile migrate up`", ErrVersionMismatch, applied, LatestVersion)
 	default:
 		return fmt.Errorf("%w: el esquema está en la versión %d, posterior a la %d que conoce este binario; "+
-			"despliega un binario más reciente (`atdevice-api migrate status` muestra el detalle)",
+			"despliega un binario más reciente (`atelemetry-mobile migrate status` muestra el detalle)",
 			ErrVersionMismatch, applied, LatestVersion)
 	}
 }

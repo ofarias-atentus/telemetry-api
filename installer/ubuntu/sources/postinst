@@ -4,12 +4,12 @@ set -e
 . /usr/share/debconf/confmodule
 
 # Reset question every install
-db_fset atdevice-api/user seen false
+db_fset atelemetry-mobile/user seen false
 
-db_input high atdevice-api/user || true
+db_input high atelemetry-mobile/user || true
 db_go || true
 
-db_get atdevice-api/user
+db_get atelemetry-mobile/user
 default_user=$RET
 
 if id "$default_user" >/dev/null 2>&1; then
@@ -21,8 +21,8 @@ fi
 
 imgver="1.0.0"
 
-root_path='/srv/atdevice-api'
-share_path='/usr/share/atdevice-api'
+root_path='/srv/atelemetry-mobile'
+share_path='/usr/share/atelemetry-mobile'
 compose_file="$root_path/docker-compose.yml"
 compose_cmd="docker compose -f $compose_file"
 
@@ -39,10 +39,10 @@ fi
 env_file="$root_path/.env"
 
 set_image_tag() {
-    if grep -q '^ATDEVICE_API_TAG=' "$env_file"; then
-        sed -i "s|^ATDEVICE_API_TAG=.*|ATDEVICE_API_TAG=$imgver|" "$env_file"
+    if grep -q '^ATELEMETRY_MOBILE_TAG=' "$env_file"; then
+        sed -i "s|^ATELEMETRY_MOBILE_TAG=.*|ATELEMETRY_MOBILE_TAG=$imgver|" "$env_file"
     else
-        printf '\nATDEVICE_API_TAG=%s\n' "$imgver" >> "$env_file"
+        printf '\nATELEMETRY_MOBILE_TAG=%s\n' "$imgver" >> "$env_file"
     fi
 }
 
@@ -54,36 +54,36 @@ if [ ! -f "$env_file" ]; then
 else
     echo "Archivo $env_file ya existe"
     set_image_tag
-    echo "ATDEVICE_API_TAG actualizado a $imgver en $env_file"
+    echo "ATELEMETRY_MOBILE_TAG actualizado a $imgver en $env_file"
 fi
 
 chown -R "$default_user":"$default_user" "$root_path"/
 
-unit=/etc/systemd/system/atdevice-api.service
+unit=/etc/systemd/system/atelemetry-mobile.service
 
 if [ ! -s "$unit" ]; then
-    echo "Copiar configuración atdevice-api.service..."
-    install -m 644 "$share_path/atdevice-api.service" "$unit"
+    echo "Copiar configuración atelemetry-mobile.service..."
+    install -m 644 "$share_path/atelemetry-mobile.service" "$unit"
     systemctl daemon-reload
-    systemctl enable atdevice-api.service
+    systemctl enable atelemetry-mobile.service
     echo "Servicio instalado y habilitado, pero NO iniciado. Siguientes pasos:"
     echo "1. Editar $root_path/.env"
     echo "2. Revisar estado de migraciones: $compose_cmd run --rm api migrate status"
     echo "3. Respaldar la base de datos con pg_dump y aplicar: $compose_cmd run --rm api migrate up"
     echo "   (en bases creadas con los scripts psql antiguos usar: $compose_cmd run --rm api migrate baseline)"
-    echo "4. Iniciar servicio: systemctl start atdevice-api"
+    echo "4. Iniciar servicio: systemctl start atelemetry-mobile"
 else
-    echo "Deshabilitar atdevice-api.service..."
-    systemctl disable atdevice-api.service
+    echo "Deshabilitar atelemetry-mobile.service..."
+    systemctl disable atelemetry-mobile.service
     echo "Remover archivo $unit..."
     rm -f "$unit"
-    echo "Copiar configuración atdevice-api.service..."
-    install -m 644 "$share_path/atdevice-api.service" "$unit"
+    echo "Copiar configuración atelemetry-mobile.service..."
+    install -m 644 "$share_path/atelemetry-mobile.service" "$unit"
     systemctl daemon-reload
-    systemctl enable atdevice-api.service
-    echo "El servicio atdevice-api está DETENIDO y no se reinicia automáticamente. Pasos siguientes:"
+    systemctl enable atelemetry-mobile.service
+    echo "El servicio atelemetry-mobile está DETENIDO y no se reinicia automáticamente. Pasos siguientes:"
     echo "1. Descargar la imagen: $compose_cmd pull"
     echo "2. Revisar estado de migraciones: $compose_cmd run --rm api migrate status"
     echo "3. Si hay migraciones pendientes, respaldar con pg_dump y ejecutar: $compose_cmd run --rm api migrate up"
-    echo "4. Iniciar servicio: systemctl restart atdevice-api"
+    echo "4. Iniciar servicio: systemctl restart atelemetry-mobile"
 fi

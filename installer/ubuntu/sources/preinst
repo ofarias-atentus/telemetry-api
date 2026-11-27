@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-if [ -f /etc/systemd/system/atdevice-api.service ]; then
-    echo "Deteniendo servicio atdevice-api..."
-    systemctl stop atdevice-api.service || true
+if [ -f /etc/systemd/system/atelemetry-mobile.service ]; then
+    echo "Deteniendo servicio atelemetry-mobile..."
+    systemctl stop atelemetry-mobile.service || true
 fi

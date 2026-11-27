@@ -3,7 +3,7 @@
 -- Falla si algún devices.country actual no se puede mapear a un código (por código, nombre o alias);
 -- el mensaje lista cada valor con su número de filas y no se modifica ninguna fila de devices.
 -- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t devices.
--- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
+-- Se aplica con `atelemetry-mobile migrate up`, con la API detenida: el binario
 -- antiguo no resuelve el país y el esquema nuevo rechaza nombres largos.
 -- ALTER TYPE reescribe devices con bloqueo exclusivo: la ingesta de telemetría se detiene hasta el COMMIT.
 -- La comparación usa lower() de la BD, que en bases con locale C solo pliega ASCII:

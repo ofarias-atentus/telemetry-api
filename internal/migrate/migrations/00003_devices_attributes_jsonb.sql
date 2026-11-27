@@ -7,7 +7,7 @@
 -- solo si ningún dispositivo del host tiene ubicación, y un host_ip NULL pasa a cadena vacía,
 -- porque hosts.host_ip es NOT NULL.
 -- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t devices.
--- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
+-- Se aplica con `atelemetry-mobile migrate up`, con la API detenida: el binario
 -- antiguo no es compatible con el esquema nuevo ni al revés.
 -- La ingesta de telemetría también se detiene hasta el COMMIT: la FK de device_telemetry toma bloqueos sobre devices.
 --

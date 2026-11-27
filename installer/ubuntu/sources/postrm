@@ -2,14 +2,14 @@
 set -e
 case "$1" in
     remove)
-        echo "Deteniendo servicio atdevice-api"
-        systemctl stop atdevice-api.service || true
-        echo "Deshabilitando servicio atdevice-api"
-        systemctl disable atdevice-api.service || true
+        echo "Deteniendo servicio atelemetry-mobile"
+        systemctl stop atelemetry-mobile.service || true
+        echo "Deshabilitando servicio atelemetry-mobile"
+        systemctl disable atelemetry-mobile.service || true
         echo "Reiniciando systemctl daemon"
         systemctl daemon-reload || true
         echo "Favor de realizar las siguientes operaciones manuales, utilizando usuario root."
-        echo "- rm /etc/systemd/system/atdevice-api.service"
-        echo "- rm -rf /srv/atdevice-api/"
+        echo "- rm /etc/systemd/system/atelemetry-mobile.service"
+        echo "- rm -rf /srv/atelemetry-mobile/"
         ;;
 esac

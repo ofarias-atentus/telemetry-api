@@ -1,5 +1,5 @@
-# Reference compose file for atdevice-api. The Ubuntu package installs a copy
-# at /srv/atdevice-api/docker-compose.yml (never overwriting an existing one).
+# Reference compose file for atelemetry-mobile. The Ubuntu package installs a copy
+# at /srv/atelemetry-mobile/docker-compose.yml (never overwriting an existing one).
 #
 # Secrets stay out of this file: put them in .env next to it (see
 # .env.docker.example).
@@ -12,18 +12,18 @@
 # (baseline is only for databases created by the old psql scripts.) serve
 # refuses to start unless the database is at the latest migration version.
 #
-# No restart policy: systemd (atdevice-api.service) restarts the container.
+# No restart policy: systemd (atelemetry-mobile.service) restarts the container.
 
 services:
   api:
     # Assumption: same registry organization as atrecovery.
-    image: atentuschile/atdevice-api:${ATDEVICE_API_TAG:-1.0.0}
+    image: atentuschile/atelemetry-mobile:${ATELEMETRY_MOBILE_TAG:-1.0.0}
     env_file: .env
     environment:
       LOG_FORMAT: json
       SERVER_PORT: "8080"
     ports:
-      - "${ATDEVICE_API_PORT:-8080}:8080"
+      - "${ATELEMETRY_MOBILE_PORT:-8080}:8080"
     # Lets DB_HOST=host.docker.internal reach PostgreSQL on the Docker host.
     extra_hosts:
       - "host.docker.internal:host-gateway"

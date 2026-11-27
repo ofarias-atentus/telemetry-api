@@ -19,7 +19,7 @@ type schemaFacts struct {
 	TelemetryBatteryPC bool
 }
 
-var errEmptyDatabase = errors.New("la base de datos está vacía: no hay esquema que registrar; usa `atdevice-api migrate up`")
+var errEmptyDatabase = errors.New("la base de datos está vacía: no hay esquema que registrar; usa `atelemetry-mobile migrate up`")
 
 // detectVersion deduce la versión del esquema a partir de facts. Una base
 // vacía o una combinación contradictoria devuelve error y no se cambia nada.

@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Supone que el esquema ya está aplicado con `atdevice-api migrate up`; crea y
+// Supone que el esquema ya está aplicado con `atelemetry-mobile migrate up`; crea y
 // borra sus propias filas itest-*.
 func TestIntegrationIngest(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")

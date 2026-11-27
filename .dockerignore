@@ -2,7 +2,7 @@
 # `COPY . .` and the repo root may hold a .env with secrets.
 #
 # Allowlist: ignore everything, then re-include only what the build needs.
-# This keeps .env (secrets), .git, the local ./atdevice-api binary, docs,
+# This keeps .env (secrets), .git, the local ./atelemetry-mobile binary, docs,
 # deploy/ and installer/ out of the build context.
 *
 
@@ -24,4 +24,4 @@
 **/.env
 **/.env.*
 .git
-atdevice-api
+atelemetry-mobile

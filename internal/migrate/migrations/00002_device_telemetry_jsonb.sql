@@ -1,7 +1,7 @@
 -- +goose Up
 -- Mueve las métricas de device_telemetry a la columna JSONB data y elimina las columnas antiguas.
 -- Irreversible: no tiene sección Down. Hacer antes un respaldo con pg_dump -t device_telemetry.
--- Se aplica con `atdevice-api migrate up`, con la API detenida: el binario
+-- Se aplica con `atelemetry-mobile migrate up`, con la API detenida: el binario
 -- antiguo no es compatible con el esquema nuevo ni al revés.
 -- El UPDATE reescribe todas las filas (más disco y WAL); en una hypertable grande puede tardar.
 --

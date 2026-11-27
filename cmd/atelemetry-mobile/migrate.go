@@ -47,8 +47,8 @@ func printStatus(w io.Writer, applied int64, err error) error {
 	if err != nil {
 		if errors.Is(err, migrate.ErrNotVersioned) {
 			fmt.Fprintln(w, "versión aplicada: ninguna (sin historial)")
-			fmt.Fprintln(w, "estado: sin historial; en una base vacía ejecuta `atdevice-api migrate up`, "+
-				"en una creada con los scripts SQL antiguos ejecuta `atdevice-api migrate baseline`")
+			fmt.Fprintln(w, "estado: sin historial; en una base vacía ejecuta `atelemetry-mobile migrate up`, "+
+				"en una creada con los scripts SQL antiguos ejecuta `atelemetry-mobile migrate baseline`")
 			return &exitError{code: 1, err: err}
 		}
 		return &exitError{code: 2, err: err}
@@ -59,7 +59,7 @@ func printStatus(w io.Writer, applied int64, err error) error {
 		fmt.Fprintln(w, "estado: al día")
 		return nil
 	case applied < migrate.LatestVersion:
-		fmt.Fprintln(w, "estado: pendiente; ejecuta `atdevice-api migrate up`")
+		fmt.Fprintln(w, "estado: pendiente; ejecuta `atelemetry-mobile migrate up`")
 		return &exitError{code: 1, err: fmt.Errorf("%w: aplicada %d, esperada %d",
 			migrate.ErrVersionMismatch, applied, migrate.LatestVersion)}
 	default:
@@ -118,7 +118,7 @@ func migrateBaseline(ctx context.Context) error {
 	}
 	fmt.Fprintf(os.Stdout, "baseline registrado en la versión %d\n", version)
 	if version < migrate.LatestVersion {
-		fmt.Fprintln(os.Stdout, "faltan migraciones: ejecuta `atdevice-api migrate up`")
+		fmt.Fprintln(os.Stdout, "faltan migraciones: ejecuta `atelemetry-mobile migrate up`")
 	}
 	return nil
 }

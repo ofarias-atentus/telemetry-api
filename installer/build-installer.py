@@ -24,12 +24,12 @@ class BuildPackage(object):
     def __init__(self):
         """Constructor."""
         self._parser = argparse.ArgumentParser(
-            description="Línea de comandos para generar deb o pkg aplicación atdevice-api."
+            description="Línea de comandos para generar deb o pkg aplicación atelemetry-mobile."
         )
         self._add_arguments()
         self._rootProject = Path(__file__).resolve().parent.parent
         self._rootInstaller = self._rootProject / "temp"
-        self._projectFolder = self._rootInstaller / "atdevice-api"
+        self._projectFolder = self._rootInstaller / "atelemetry-mobile"
         self._ignore = ignore_patterns(
             "*.pyc", "temp", "build-installer.py", "__pycache__", "db.sqlite3"
         )
@@ -97,7 +97,7 @@ class BuildPackage(object):
             / "installer"
             / "ubuntu"
             / "service"
-            / "atdevice-api.service",
+            / "atelemetry-mobile.service",
             self._projectFolder,
         )
         debian_folder = self._projectFolder / "debian"

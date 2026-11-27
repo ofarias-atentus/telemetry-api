@@ -72,7 +72,7 @@ func TestRunHelp(t *testing.T) {
 			if runErr != nil {
 				t.Fatalf("err = %v, want nil", runErr)
 			}
-			if !strings.Contains(string(out), "atdevice-api serve") {
+			if !strings.Contains(string(out), "atelemetry-mobile serve") {
 				t.Errorf("stdout = %q, want usage", out)
 			}
 		})

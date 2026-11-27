@@ -1,14 +1,14 @@
-# atdevice-api
+# atelemetry-mobile
 
-Servicio para despliegue de la imagen docker de atdevice-api (API de ingesta de
+Servicio para despliegue de la imagen docker de atelemetry-mobile (API de ingesta de
 inventario y telemetría de dispositivos) en Ubuntu 20.04.
 
-El paquete `.deb` instala en `/srv/atdevice-api`:
+El paquete `.deb` instala en `/srv/atelemetry-mobile`:
 
 - `docker-compose.yml`: copia de referencia (solo si no existe).
 - `.env`: copia de la plantilla con permisos 600 (solo si no existe).
 
-y registra la unidad systemd `atdevice-api.service`. Nunca se sobrescribe un
+y registra la unidad systemd `atelemetry-mobile.service`. Nunca se sobrescribe un
 `.env` ni un `docker-compose.yml` existentes.
 
 ## Requisitos previos
@@ -35,7 +35,7 @@ la red de Docker:
 
    Ojo: `docker compose` crea su propia red para el proyecto (por ejemplo
    `172.18.0.0/16`), no usa el bridge por defecto `172.17.0.0/16`. Revisar el
-   rango real con `docker network inspect atdevice-api_default` y permitir ese
+   rango real con `docker network inspect atelemetry-mobile_default` y permitir ese
    rango.
 3. Recargar: `sudo systemctl reload postgresql`.
 4. Si hay firewall (ufw), permitir el puerto 5432 desde ese rango.
@@ -43,39 +43,39 @@ la red de Docker:
 ## Instalación
 
 ```bash
-sudo dpkg -i atdevice-api_1.0.0_all.deb
+sudo dpkg -i atelemetry-mobile_1.0.0_all.deb
 ```
 
-Se pedirá el usuario del sistema que será dueño de `/srv/atdevice-api`
+Se pedirá el usuario del sistema que será dueño de `/srv/atelemetry-mobile`
 (por defecto `atentus`). En la primera instalación el servicio queda habilitado
 pero no iniciado. Pasos siguientes:
 
-1. Editar `/srv/atdevice-api/.env` (`DB_HOST`, `DB_USER`, `DB_PASSWORD`,
+1. Editar `/srv/atelemetry-mobile/.env` (`DB_HOST`, `DB_USER`, `DB_PASSWORD`,
    `DB_NAME`). Los valores con `$`, `#` o espacios van entre comillas simples.
 2. Revisar el estado de las migraciones:
 
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate status
    ```
 
 3. Respaldar con `pg_dump` y aplicar las migraciones pendientes (pueden
    detener la ingesta mientras corren):
 
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate up
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate up
    ```
 
    Para bases creadas con los scripts psql antiguos (`database.sql` y
    `migrations/`), en vez de `migrate up` usar:
 
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate baseline
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate baseline
    ```
 
 4. Iniciar el servicio:
 
    ```bash
-   sudo systemctl start atdevice-api
+   sudo systemctl start atelemetry-mobile
    ```
 
 `serve` nunca migra y se niega a iniciar si la base de datos no está en la
@@ -84,17 +84,17 @@ pero no iniciado. Pasos siguientes:
 ## Actualización
 
 Al actualizar el paquete, `preinst` detiene el servicio y `postinst` actualiza
-la línea `ATDEVICE_API_TAG=` de `/srv/atdevice-api/.env` (la agrega si falta) a
+la línea `ATELEMETRY_MOBILE_TAG=` de `/srv/atelemetry-mobile/.env` (la agrega si falta) a
 la versión de imagen del paquete. Docker Compose lee ese `.env` para interpolar
 `docker-compose.yml`, que nunca se sobrescribe. El servicio NO se reinicia
 automáticamente. Pasos:
 
 ```bash
-docker compose -f /srv/atdevice-api/docker-compose.yml pull
-docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status
+docker compose -f /srv/atelemetry-mobile/docker-compose.yml pull
+docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate status
 # si hay migraciones pendientes (respaldar antes con pg_dump):
-docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate up
-sudo systemctl restart atdevice-api
+docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate up
+sudo systemctl restart atelemetry-mobile
 ```
 
 ## Si el servicio se detiene con código 1
@@ -109,28 +109,28 @@ simple no lo garantiza). Si el servicio queda detenido con código 1, ejecutar
 
 El código 1 también puede venir del propio Docker Compose (por ejemplo, fallo
 al descargar la imagen o falta del archivo `.env`). Antes de asumir una
-discrepancia de esquema, revisar `journalctl -u atdevice-api`.
+discrepancia de esquema, revisar `journalctl -u atelemetry-mobile`.
 
 ## Configuración
 
-- Variables en `/srv/atdevice-api/.env`; `LOG_FORMAT=json` y `SERVER_PORT=8080`
+- Variables en `/srv/atelemetry-mobile/.env`; `LOG_FORMAT=json` y `SERVER_PORT=8080`
   los fija el compose.
-- Tag de imagen: variable `ATDEVICE_API_TAG` (por defecto `1.0.0`). Puerto
-  publicado: `ATDEVICE_API_PORT` (por defecto `8080`). Ambas están en
-  `/srv/atdevice-api/.env`; el paquete gestiona `ATDEVICE_API_TAG`.
+- Tag de imagen: variable `ATELEMETRY_MOBILE_TAG` (por defecto `1.0.0`). Puerto
+  publicado: `ATELEMETRY_MOBILE_PORT` (por defecto `8080`). Ambas están en
+  `/srv/atelemetry-mobile/.env`; el paquete gestiona `ATELEMETRY_MOBILE_TAG`.
 - La API no tiene autenticación ni TLS: publicar solo en redes confiables.
 
 ## Logs
 
 ```bash
-journalctl -u atdevice-api -f
-docker compose -f /srv/atdevice-api/docker-compose.yml logs -f
+journalctl -u atelemetry-mobile -f
+docker compose -f /srv/atelemetry-mobile/docker-compose.yml logs -f
 ```
 
 ## Desinstalación
 
 ```bash
-sudo apt remove atdevice-api
-sudo rm /etc/systemd/system/atdevice-api.service
-sudo rm -rf /srv/atdevice-api/
+sudo apt remove atelemetry-mobile
+sudo rm /etc/systemd/system/atelemetry-mobile.service
+sudo rm -rf /srv/atelemetry-mobile/
 ```

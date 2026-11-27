@@ -1,4 +1,0 @@
-README.md srv/atdevice-api
-atdevice-api.service usr/share/atdevice-api
-docker-compose.yml usr/share/atdevice-api
-.env.docker.example usr/share/atdevice-api

@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 #
-# Build:    docker build -t atdevice-api .
+# Build:    docker build -t atelemetry-mobile .
 # Migrate:  run as a one-off BEFORE serve (serve never migrates):
-#             docker run --rm --env-file .env.docker atdevice-api migrate status
-#             docker run --rm --env-file .env.docker atdevice-api migrate up
+#             docker run --rm --env-file .env.docker atelemetry-mobile migrate status
+#             docker run --rm --env-file .env.docker atelemetry-mobile migrate up
 #           Back up with pg_dump first: migrations can stall ingestion.
 #           For databases created by the old psql scripts use `migrate baseline`.
-# Serve:    docker run --env-file .env.docker -p 8080:8080 --stop-timeout 30 atdevice-api
+# Serve:    docker run --env-file .env.docker -p 8080:8080 --stop-timeout 30 atelemetry-mobile
 #           serve refuses to start unless the database is at the latest
 #           migration version (the migrations are embedded in the binary).
 #
@@ -39,21 +39,21 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/atdevice-api ./cmd/atdevice-api
+    go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/atelemetry-mobile ./cmd/atelemetry-mobile
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
 ARG SOURCE_URL=""
-LABEL org.opencontainers.image.title="atdevice-api" \
+LABEL org.opencontainers.image.title="atelemetry-mobile" \
       org.opencontainers.image.description="Device inventory and hardware telemetry ingestion API (serve, migrate)" \
       org.opencontainers.image.source="${SOURCE_URL}"
 
-COPY --from=build /out/atdevice-api /usr/local/bin/atdevice-api
+COPY --from=build /out/atelemetry-mobile /usr/local/bin/atelemetry-mobile
 
 # Empty working dir: no .env is picked up unless one is deliberately mounted.
 WORKDIR /app
 USER nonroot:nonroot
 EXPOSE 8080
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/local/bin/atdevice-api"]
+ENTRYPOINT ["/usr/local/bin/atelemetry-mobile"]
 CMD ["serve"]

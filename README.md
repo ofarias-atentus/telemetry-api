@@ -1,4 +1,4 @@
-# Telemetry API (`atdevice-api`)
+# Telemetry API (`atelemetry-mobile`)
 
 API ingestora central escrita en **Go** para el registro de inventario y recolección masiva de telemetría de hardware (batería, temperatura, voltaje, CPU y RAM) de dispositivos móviles (**iOS** y **Android**) distribuidos en hosts de monitoreo. Utiliza **PostgreSQL** para el almacenamiento, con **TimescaleDB** opcional para las series temporales.
 
@@ -32,7 +32,7 @@ telemetry-api/
 ├── go.mod                # Definición del módulo y dependencias Go
 ├── go.sum                # Checksums de dependencias
 ├── cmd/
-│   └── atdevice-api/            # Punto de entrada: solo la CLI
+│   └── atelemetry-mobile/            # Punto de entrada: solo la CLI
 │       ├── main.go              # Despacho de subcomandos (serve, migrate, help) y códigos de salida
 │       ├── serve.go             # serve: comprueba la conexión y el esquema, sirve la API y apaga ordenadamente
 │       ├── migrate.go           # migrate status, up y baseline
@@ -91,8 +91,8 @@ telemetry-api/
 Crea una base de datos vacía en PostgreSQL (por ejemplo, `attelemetry`). El esquema lo crea el propio binario con sus migraciones, así que ya no hace falta ejecutar `psql -f database.sql`. Configura antes el archivo `.env` (paso 2) y luego:
 
 ```bash
-./atdevice-api migrate status   # muestra la versión esperada y la aplicada
-./atdevice-api migrate up       # crea el esquema completo en una base vacía
+./atelemetry-mobile migrate status   # muestra la versión esperada y la aplicada
+./atelemetry-mobile migrate up       # crea el esquema completo en una base vacía
 ```
 
 #### Modelo de Datos
@@ -139,9 +139,9 @@ La versión esperada por el binario es `LatestVersion` (`internal/migrate/migrat
 Comandos:
 
 ```bash
-./atdevice-api migrate status     # sale con 0 solo si la base está al día
-./atdevice-api migrate up         # aplica las pendientes (o crea el esquema en una base vacía)
-./atdevice-api migrate baseline   # una sola vez, para bases creadas con los scripts SQL antiguos
+./atelemetry-mobile migrate status     # sale con 0 solo si la base está al día
+./atelemetry-mobile migrate up         # aplica las pendientes (o crea el esquema en una base vacía)
+./atelemetry-mobile migrate baseline   # una sola vez, para bases creadas con los scripts SQL antiguos
 ```
 
 - `migrate status` imprime la versión esperada y la aplicada. Sale con `0` si coinciden, y con `1` si la base está pendiente, adelantada o sin historial.
@@ -168,9 +168,9 @@ Comandos:
 1. Detén la API.
 2. Haz un respaldo de la base: `pg_dump -U <usuario> -h <host> -d attelemetry > attelemetry_backup.sql`.
 3. Despliega el binario nuevo junto con la migración.
-4. Solo para bases creadas con los scripts `database.sql` y `migrations/` antiguos (sin `goose_db_version`), registra el historial una vez: `./atdevice-api migrate baseline`.
-5. Aplica lo pendiente: `./atdevice-api migrate up`.
-6. Inicia la API: `./atdevice-api serve`.
+4. Solo para bases creadas con los scripts `database.sql` y `migrations/` antiguos (sin `goose_db_version`), registra el historial una vez: `./atelemetry-mobile migrate baseline`.
+5. Aplica lo pendiente: `./atelemetry-mobile migrate up`.
+6. Inicia la API: `./atelemetry-mobile serve`.
 
 > **Advertencias**
 > - Haz un respaldo antes de `migrate up`. No hay migración inversa.
@@ -186,32 +186,32 @@ Comandos:
 
 #### Actualizar desde la versión anterior (main)
 
-Procedimiento para un servidor que ejecuta la API de `main`, con la API detenida y en este orden. Los comandos de Docker Compose asumen la instalación del paquete en `/srv/atdevice-api`.
+Procedimiento para un servidor que ejecuta la API de `main`, con la API detenida y en este orden. Los comandos de Docker Compose asumen la instalación del paquete en `/srv/atelemetry-mobile`.
 
 1. Revisa los países. Cada valor debe ser un código ISO, un nombre o un alias de `countries`; si no, `00004` falla:
    ```sql
    SELECT country, count(*) FROM devices GROUP BY 1 ORDER BY 2 DESC;
    ```
-2. Detén la API: `sudo systemctl stop atdevice-api`.
+2. Detén la API: `sudo systemctl stop atelemetry-mobile`.
 3. Haz un respaldo en formato personalizado (añade `-h` y `-U` si hace falta):
    ```bash
    pg_dump -Fc -d attelemetry -f attelemetry_$(date +%F).dump
    ```
-4. Instala la versión nueva (paquete o imagen) y descarga la imagen con `docker compose -f /srv/atdevice-api/docker-compose.yml pull`.
+4. Instala la versión nueva (paquete o imagen) y descarga la imagen con `docker compose -f /srv/atelemetry-mobile/docker-compose.yml pull`.
 5. Solo para bases creadas con los scripts antiguos, registra el historial una vez:
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate baseline
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate baseline
    ```
 6. Aplica las migraciones pendientes:
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate up
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate up
    ```
 7. Comprueba la versión. Debe salir con código `0`:
    ```bash
-   docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status
+   docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate status
    ```
-8. Inicia la API: `sudo systemctl start atdevice-api`.
-9. Verifica: `curl -i -X POST http://localhost:8080/api/v1/telemetry -H "Content-Type: application/json" -d '[]'` debe responder `200`, y `journalctl -u atdevice-api -f` no debe mostrar errores de arranque ni de `upsert`.
+8. Inicia la API: `sudo systemctl start atelemetry-mobile`.
+9. Verifica: `curl -i -X POST http://localhost:8080/api/v1/telemetry -H "Content-Type: application/json" -d '[]'` debe responder `200`, y `journalctl -u atelemetry-mobile -f` no debe mostrar errores de arranque ni de `upsert`.
 10. Cuando lo hayas verificado, elimina la versión anterior (imagen o binario). Conserva el respaldo hasta confirmar que la API funciona.
 
 Si hay que volver atrás, restaura el respaldo. Las migraciones no tienen reversa:
@@ -294,23 +294,23 @@ LOG_FORMAT=text
    ```
 2. Iniciar el servidor:
    ```bash
-   go run ./cmd/atdevice-api serve
+   go run ./cmd/atelemetry-mobile serve
    ```
 
 ### Opción B: Compilar y ejecutar el binario
 
-1. Compilar el binario `atdevice-api`:
+1. Compilar el binario `atelemetry-mobile`:
    ```bash
-   go build -o atdevice-api ./cmd/atdevice-api
+   go build -o atelemetry-mobile ./cmd/atelemetry-mobile
    ```
 2. Revisar o aplicar las migraciones (asegúrate de que `.env` esté en el directorio de trabajo actual, o de que las variables estén definidas en el entorno):
    ```bash
-   ./atdevice-api migrate status
-   ./atdevice-api migrate up
+   ./atelemetry-mobile migrate status
+   ./atelemetry-mobile migrate up
    ```
 3. Iniciar la API:
    ```bash
-   ./atdevice-api serve
+   ./atelemetry-mobile serve
    ```
 
 ### Subcomandos
@@ -347,49 +347,49 @@ time=2026-11-25T15:06:20.102-03:00 level=INFO msg="API Ingestora central escucha
 
 ## Docker
 
-El `Dockerfile` de la raíz construye la imagen en dos etapas: compila el binario con `golang:1.27.1-bookworm` (`CGO_ENABLED=0`, `GOTOOLCHAIN=local`) y lo copia a `gcr.io/distroless/static-debian12:nonroot`, que no tiene shell. El contenedor ejecuta `atdevice-api serve` por defecto y corre como usuario `nonroot`.
+El `Dockerfile` de la raíz construye la imagen en dos etapas: compila el binario con `golang:1.27.1-bookworm` (`CGO_ENABLED=0`, `GOTOOLCHAIN=local`) y lo copia a `gcr.io/distroless/static-debian12:nonroot`, que no tiene shell. El contenedor ejecuta `atelemetry-mobile serve` por defecto y corre como usuario `nonroot`.
 
 La configuración no va en la imagen. `.dockerignore` es una lista blanca (solo `go.mod`, `go.sum`, `cmd/` e `internal/`), así que el `.env` del repositorio nunca entra en el contexto de build. La configuración se pasa en tiempo de ejecución con `--env-file`; la plantilla está en `deploy/.env.docker.example`. Las comillas simples que la plantilla usa para valores con `$`, `#` o espacios solo aplican a Compose (`env_file`) y al `.env` de godotenv. `docker run --env-file` no quita comillas, así que ahí esos valores se escriben sin comillas.
 
 ```bash
-docker build -t atdevice-api .
+docker build -t atelemetry-mobile .
 
 # Revisar o aplicar migraciones (serve nunca migra)
-docker run --rm --env-file .env.docker atdevice-api migrate status
-docker run --rm --env-file .env.docker atdevice-api migrate up
+docker run --rm --env-file .env.docker atelemetry-mobile migrate status
+docker run --rm --env-file .env.docker atelemetry-mobile migrate up
 
 # Servir la API
-docker run -d --name atdevice-api --env-file .env.docker -p 8080:8080 --stop-timeout 30 atdevice-api
+docker run -d --name atelemetry-mobile --env-file .env.docker -p 8080:8080 --stop-timeout 30 atelemetry-mobile
 ```
 
 Notas:
-- Para una base creada con los scripts antiguos, el registro inicial es `docker run --rm --env-file .env.docker atdevice-api migrate baseline`, antes de `migrate up`.
+- Para una base creada con los scripts antiguos, el registro inicial es `docker run --rm --env-file .env.docker atelemetry-mobile migrate baseline`, antes de `migrate up`.
 - Si PostgreSQL está en el host, usa `DB_HOST=host.docker.internal`. En Linux añade `--add-host=host.docker.internal:host-gateway` al `docker run` (el compose ya lo incluye en `extra_hosts`). PostgreSQL debe aceptar conexiones desde la red de Docker (ver [installer/ubuntu/README.md](installer/ubuntu/README.md)).
 - `--stop-timeout 30`: `serve` tarda hasta 15 s en apagarse, y el valor por defecto de Docker (10 s) es menor.
 - No hay `HEALTHCHECK`: la imagen no tiene shell ni `curl`, y la API no tiene endpoint de salud.
-- Los logs salen por stderr: `docker logs atdevice-api`.
+- Los logs salen por stderr: `docker logs atelemetry-mobile`.
 - La API no tiene autenticación ni TLS. Publica el puerto solo en redes confiables o detrás de un proxy.
 
 ---
 
 ## Despliegue en Ubuntu
 
-El repositorio incluye `deploy/docker-compose.yml` (referencia) y un paquete `.deb` para Ubuntu 20.04 en `installer/`, que se genera con `installer/build-installer.py`. El paquete instala en `/srv/atdevice-api`:
+El repositorio incluye `deploy/docker-compose.yml` (referencia) y un paquete `.deb` para Ubuntu 20.04 en `installer/`, que se genera con `installer/build-installer.py`. El paquete instala en `/srv/atelemetry-mobile`:
 
 - `docker-compose.yml` y `.env` (copias de `deploy/`; nunca sobrescribe archivos existentes; `.env` con permisos `600`).
-- La unidad systemd `atdevice-api.service`, que ejecuta `docker compose up`. Se reinicia si falla, salvo que salga con código 1: eso indica un esquema de base distinto al esperado, pero también errores de Compose como una imagen que no se descarga o un `.env` que falta (revisa `journalctl`). Permite 5 arranques por cada 60 s, y los códigos 130 y 143 cuentan como parada normal. En la primera instalación queda habilitada pero no iniciada.
+- La unidad systemd `atelemetry-mobile.service`, que ejecuta `docker compose up`. Se reinicia si falla, salvo que salga con código 1: eso indica un esquema de base distinto al esperado, pero también errores de Compose como una imagen que no se descarga o un `.env` que falta (revisa `journalctl`). Permite 5 arranques por cada 60 s, y los códigos 130 y 143 cuentan como parada normal. En la primera instalación queda habilitada pero no iniciada.
 
-La imagen que usa el compose es `atentuschile/atdevice-api` (`ATDEVICE_API_TAG`, `1.0.0` por defecto). Ese nombre de registro es un supuesto que hay que confirmar.
+La imagen que usa el compose es `atentuschile/atelemetry-mobile` (`ATELEMETRY_MOBILE_TAG`, `1.0.0` por defecto). Ese nombre de registro es un supuesto que hay que confirmar.
 
 Primer despliegue, en resumen (el detalle está en [installer/ubuntu/README.md](installer/ubuntu/README.md)):
 
 1. Instala antes `docker-ce` y `docker-compose-plugin`. El `.deb` solo depende de `debconf`.
-2. Instala el paquete: `sudo dpkg -i atdevice-api_1.0.0_all.deb`.
-3. Edita `/srv/atdevice-api/.env` con los datos de la base de datos.
-4. Respalda la base con `pg_dump`, revisa el estado con `docker compose -f /srv/atdevice-api/docker-compose.yml run --rm api migrate status` y aplica `migrate up` (o `migrate baseline` seguido de `migrate up` en bases antiguas).
-5. Inicia el servicio: `sudo systemctl start atdevice-api`.
+2. Instala el paquete: `sudo dpkg -i atelemetry-mobile_1.0.0_all.deb`.
+3. Edita `/srv/atelemetry-mobile/.env` con los datos de la base de datos.
+4. Respalda la base con `pg_dump`, revisa el estado con `docker compose -f /srv/atelemetry-mobile/docker-compose.yml run --rm api migrate status` y aplica `migrate up` (o `migrate baseline` seguido de `migrate up` en bases antiguas).
+5. Inicia el servicio: `sudo systemctl start atelemetry-mobile`.
 
-Los logs están en el journal: `journalctl -u atdevice-api -f`. Al actualizar el paquete el servicio no se reinicia: queda detenido, y `postinst` actualiza `ATDEVICE_API_TAG` en `/srv/atdevice-api/.env` a la versión de imagen del paquete. El procedimiento (descargar la imagen, aplicar migraciones con respaldo previo si hacen falta y reiniciar el servicio) está en la sección «Actualización» de [installer/ubuntu/README.md](installer/ubuntu/README.md).
+Los logs están en el journal: `journalctl -u atelemetry-mobile -f`. Al actualizar el paquete el servicio no se reinicia: queda detenido, y `postinst` actualiza `ATELEMETRY_MOBILE_TAG` en `/srv/atelemetry-mobile/.env` a la versión de imagen del paquete. El procedimiento (descargar la imagen, aplicar migraciones con respaldo previo si hacen falta y reiniciar el servicio) está en la sección «Actualización» de [installer/ubuntu/README.md](installer/ubuntu/README.md).
 
 ---
 
@@ -490,7 +490,7 @@ TEST_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/attelemetry?sslmod
 Requiere una base de datos **vacía y desechable** en `TEST_MIGRATE_DATABASE_URL`, sin parámetros `pool_*` en la URL. La prueba aplica todas las migraciones, comprueba el estado y el rechazo de `baseline`, y no limpia la base al terminar.
 
 ```bash
-TEST_MIGRATE_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/atdevice_scratch?sslmode=disable' \
+TEST_MIGRATE_DATABASE_URL='postgres://usuario:password@127.0.0.1:5432/atelemetry_scratch?sslmode=disable' \
   go test -tags integration -run Integration ./internal/migrate/
 ```
 

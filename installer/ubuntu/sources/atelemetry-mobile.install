@@ -1,0 +1,4 @@
+README.md srv/atelemetry-mobile
+atelemetry-mobile.service usr/share/atelemetry-mobile
+docker-compose.yml usr/share/atelemetry-mobile
+.env.docker.example usr/share/atelemetry-mobile
